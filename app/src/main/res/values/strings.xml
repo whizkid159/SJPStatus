@@ -1,0 +1,16 @@
+<resources>
+    <string name="app_name">SJP Pulse</string>
+    <string name="dashboard_title">SJP Pulse</string>
+    <string name="dashboard_subtitle">Sindh Job Portal • Backend Status Telemetry</string>
+    <string name="tab_dashboard">Applications</string>
+    <string name="tab_timeline">Status Diffs</string>
+    <string name="tab_analytics">Analytics</string>
+    <string name="tab_portal">SJP Portal</string>
+    <string name="sync_now">Sync API Now</string>
+    <string name="connect_portal">Portal Login</string>
+    <string name="search_placeholder">Search post title, department, or BPS…</string>
+    <string name="notification_channel_name">SJP Application Status Alerts</string>
+    <string name="notification_channel_desc">Instant alerts when hidden application statuses change on sjp.gos.pk</string>
+    <string name="export_report">Export Custom Report</string>
+    <string name="raw_json_inspector">Raw JSON Payload Inspector</string>
+</resources>

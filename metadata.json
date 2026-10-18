@@ -1,0 +1,6 @@
+{
+  "name": "SJP Pulse",
+  "description": "Track hidden candidate job application statuses, scrutiny remarks, status change history, and analytics from sjp.gos.pk with persistent WebView session capture and background alerts.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

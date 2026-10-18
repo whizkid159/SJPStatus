@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="360dp"
+    android:height="180dp"
+    android:viewportWidth="360"
+    android:viewportHeight="180">
+    <path android:pathData="M0,0h360v180h-360z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="0"
+                android:startY="0"
+                android:endX="360"
+                android:endY="180"
+                android:type="linear">
+                <item android:color="#074F38" android:offset="0.0" />
+                <item android:color="#0B6E4F" android:offset="0.55" />
+                <item android:color="#0F172A" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- Decorative Sindh Ajrak-inspired geometric lattice & radar arcs -->
+    <path
+        android:fillColor="#18FFFFFF"
+        android:pathData="M310,90m-110,0a110,110 0,1 1,220 0a110,110 0,1 1,-220 0" />
+    <path
+        android:fillColor="#14FFFFFF"
+        android:pathData="M310,90m-75,0a75,75 0,1 1,150 0a75,75 0,1 1,-150 0" />
+    <path
+        android:fillColor="#22FBBF24"
+        android:pathData="M295,40l25,25l-25,25l-25,-25z" />
+    <path
+        android:fillColor="#2834D399"
+        android:pathData="M245,105l20,20l-20,20l-20,-20z" />
+    <path
+        android:strokeColor="#4434D399"
+        android:strokeWidth="2.5"
+        android:pathData="M20,145 L95,145 L115,115 L135,155 L160,100 L180,145 L340,145" />
+</vector>

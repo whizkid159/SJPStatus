@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Bold shield & pulse check silhouette inside 66dp safe zone (21..87) -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,24L31,34v18c0,15.5 9.8,29.8 23,34c13.2,-4.2 23,-18.5 23,-34V34L54,24z" />
+    <path
+        android:fillColor="#0B6E4F"
+        android:pathData="M54,29.5L36,37.3v14.7c0,12.1 7.7,23.3 18,26.8c10.3,-3.5 18,-14.7 18,-26.8V37.3L54,29.5z" />
+    <!-- Gold pulse & checkmark inside shield -->
+    <path
+        android:fillColor="#FBBF24"
+        android:pathData="M40,54h7l4,-9l5,17l4,-11l3,3h6v4h-7.8l-1.2,-1.2l-4.2,11.5l-5.2,-17.6l-2.6,5.8H40V54z" />
+    <path
+        android:fillColor="#34D399"
+        android:pathData="M54,36a4,4 0,1 1,0 8a4,4 0,1 1,0 -8z" />
+</vector>
