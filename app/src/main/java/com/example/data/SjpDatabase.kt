@@ -12,7 +12,7 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface SjpDao {
-    @Query("SELECT * FROM applied_jobs ORDER BY lastUpdatedTimestamp DESC")
+    @Query("SELECT * FROM applied_jobs ORDER BY lastUpdatedTimestamp DESC, applicationId DESC")
     fun observeAllJobs(): Flow<List<AppliedJobEntity>>
 
     @Query("SELECT * FROM applied_jobs")
@@ -45,6 +45,9 @@ interface SjpDao {
     @Query("SELECT * FROM status_history WHERE applicationId = :appId ORDER BY detectedAtTimestamp DESC")
     fun observeHistoryForJob(appId: String): Flow<List<StatusHistoryEntity>>
 
+    @Query("SELECT COUNT(*) FROM status_history WHERE applicationId = :appId AND newRawStatus = :status AND changedAtFormatted = :changedAt")
+    suspend fun countMatchingHistoryEntry(appId: String, status: String, changedAt: String): Int
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertStatusHistory(history: StatusHistoryEntity)
 
@@ -60,7 +63,7 @@ interface SjpDao {
 
 @Database(
     entities = [AppliedJobEntity::class, StatusHistoryEntity::class],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class SjpDatabase : RoomDatabase() {
@@ -76,7 +79,7 @@ abstract class SjpDatabase : RoomDatabase() {
                     context.applicationContext,
                     SjpDatabase::class.java,
                     "sjp_pulse_database.db"
-                ).fallbackToDestructiveMigration().build()
+                ).fallbackToDestructiveMigration(dropAllTables = true).build()
                 INSTANCE = instance
                 instance
             }

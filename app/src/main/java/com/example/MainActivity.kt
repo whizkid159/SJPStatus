@@ -41,10 +41,10 @@ enum class SjpDestination(
     val selectedIcon: ImageVector,
     val unselectedIcon: ImageVector
 ) {
-    DASHBOARD("dashboard", "Status Radar", Icons.Filled.Dashboard, Icons.Outlined.Dashboard),
-    TIMELINE("timeline", "Status Diffs", Icons.Filled.History, Icons.Outlined.History),
+    DASHBOARD("dashboard", "Applications", Icons.Filled.Dashboard, Icons.Outlined.Dashboard),
+    TIMELINE("timeline", "Status History", Icons.Filled.History, Icons.Outlined.History),
     ANALYTICS("analytics", "Analytics", Icons.Filled.Analytics, Icons.Outlined.Analytics),
-    PORTAL("portal", "SJP Portal", Icons.Filled.Language, Icons.Outlined.Language)
+    PORTAL("portal", "SJP Login", Icons.Filled.Language, Icons.Outlined.Language)
 }
 
 class MainActivity : ComponentActivity() {
@@ -68,7 +68,6 @@ fun SjpPulseApp(
     var currentTab by rememberSaveable { mutableStateOf(SjpDestination.DASHBOARD) }
     val context = LocalContext.current
 
-    // Request POST_NOTIFICATIONS permission on Android 13+ so background status change alerts work
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { _ -> }
@@ -85,7 +84,6 @@ fun SjpPulseApp(
         }
     }
 
-    // BackHandler for secondary tabs to return to the primary Dashboard
     if (currentTab != SjpDestination.DASHBOARD) {
         BackHandler {
             currentTab = SjpDestination.DASHBOARD
@@ -172,7 +170,6 @@ fun SjpPulseApp(
                             uiState = uiState,
                             onSyncNow = viewModel::syncFromPortalApi,
                             onOpenPortalTab = { currentTab = SjpDestination.PORTAL },
-                            onSimulateStatusAlert = viewModel::simulateStatusUpdateAlert,
                             onSearchQueryChange = viewModel::updateSearchQuery,
                             onStatusFilterSelect = viewModel::selectStatusFilter,
                             onToggleRemindersFilter = viewModel::toggleRemindersFilter,
@@ -186,7 +183,7 @@ fun SjpPulseApp(
                             historyList = uiState.historyList,
                             unreadCount = uiState.unreadHistoryCount,
                             onMarkAllRead = viewModel::markAllHistoryRead,
-                            onSimulateStatusTransition = viewModel::simulateStatusUpdateAlert
+                            onSyncNow = viewModel::syncFromPortalApi
                         )
 
                         SjpDestination.ANALYTICS -> AnalyticsAndReportScreen(
@@ -197,15 +194,19 @@ fun SjpPulseApp(
 
                         SjpDestination.PORTAL -> PortalWebViewScreen(
                             sessionState = uiState.sessionState,
+                            webViewFetchRequests = viewModel.webViewFetchRequests,
                             onSessionCaptured = { token, cookies ->
                                 viewModel.onWebViewSessionCaptured(token, cookies)
                             },
                             onPayloadCaptured = { json, source ->
                                 viewModel.onWebViewPayloadCaptured(json, source)
                             },
+                            onFetchError = viewModel::onWebViewFetchError,
                             onSaveConfig = viewModel::savePollingAndTokenConfig,
-                            onLoadDiagnosticSample = viewModel::loadDiagnosticSamplePayload,
-                            onClearSession = viewModel::clearSessionCredentials
+                            onClearSession = viewModel::clearSessionAndData,
+                            onNavigateToDashboard = {
+                                currentTab = SjpDestination.DASHBOARD
+                            }
                         )
                     }
                 }
@@ -213,7 +214,6 @@ fun SjpPulseApp(
         }
     }
 
-    // Modal Bottom Sheet for Job Details, Personal Notes, Interview Countdown & Raw JSON Inspector
     uiState.selectedJobForDetail?.let { selectedJob ->
         val jobHistory = remember(uiState.historyList, selectedJob.applicationId) {
             uiState.historyList.filter { it.applicationId == selectedJob.applicationId }

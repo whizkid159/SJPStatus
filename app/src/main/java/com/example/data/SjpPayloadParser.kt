@@ -2,18 +2,53 @@ package com.example.data
 
 import org.json.JSONArray
 import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 
 object SjpPayloadParser {
 
     data class ParseOutcome(
         val jobs: List<AppliedJobEntity>,
-        val candidateName: String?,
-        val candidateCnic: String?
+        val backendHistoryMap: Map<String, List<SjpBackendStatusEntry>>,
+        val totalApplications: Int,
+        val totalPages: Int,
+        val currentPage: Int
     )
 
     /**
-     * Parses any JSON payload returned by sjp.gos.pk/api/v2/candidates/application/getAllAppliedJobsByCandidate
-     * Supports root JSONArray or wrapped JSONObject ({ data: [...], result: [...], applications: [...] }).
+     * Parses the exact JSON schema returned by:
+     * https://usr-svc.sjp.gos.pk/api/v2/candidates/application/getAllAppliedJobsByCandidate?page=1&limit=10&keyword=
+     *
+     * Schema from user's Firefox bookmarklet:
+     * {
+     *   "data": {
+     *     "applications": [
+     *       {
+     *         "applicationId": ...,
+     *         "applicationStatus": "SHORTLISTED" | "REJECTED" | "OFFERED" | "WAITING" | ...,
+     *         "jobOffered": true | false,
+     *         "Offer": { ... } | null,
+     *         "reasonForRejected": "..." | null,
+     *         "Job": {
+     *           "jobTitle": "...",
+     *           "jobInterviewStatus": "...",
+     *           "Department": {
+     *             "departmentName": "..."
+     *           }
+     *         },
+     *         "ApplicationStatuses": [
+     *           { "status": "...", "changedAt": "..." }
+     *         ]
+     *       }
+     *     ],
+     *     "pagination": {
+     *       "total": 25,
+     *       "totalPages": 3
+     *     }
+     *   }
+     * }
      */
     fun parseAppliedJobsJson(
         rawJsonText: String,
@@ -21,139 +56,137 @@ object SjpPayloadParser {
     ): ParseOutcome {
         val trimmed = rawJsonText.trim()
         if (trimmed.isEmpty()) {
-            throw IllegalArgumentException("Empty response received from endpoint")
+            throw IllegalArgumentException("Empty response received from SJP API")
         }
 
-        var candidateName: String? = null
-        var candidateCnic: String? = null
-        val jsonArray: JSONArray = when {
+        var totalPages = 1
+        var currentPage = 1
+        var totalFromPagination: Int? = null
+
+        val appsArray: JSONArray = when {
             trimmed.startsWith("[") -> JSONArray(trimmed)
             trimmed.startsWith("{") -> {
                 val rootObj = JSONObject(trimmed)
-                candidateName = extractFirstNonBlank(
-                    rootObj,
-                    "candidateName", "fullName", "name", "applicantName"
-                )
-                candidateCnic = extractFirstNonBlank(
-                    rootObj,
-                    "cnic", "candidateCnic", "nic"
-                )
-                findApplicationsArray(rootObj)
+                val dataObj = rootObj.optJSONObject("data") ?: rootObj
+                val paginationObj = dataObj.optJSONObject("pagination")
+                    ?: rootObj.optJSONObject("pagination")
+
+                if (paginationObj != null) {
+                    totalPages = paginationObj.optInt("totalPages", 1).coerceAtLeast(1)
+                    currentPage = paginationObj.optInt("page", paginationObj.optInt("currentPage", 1)).coerceAtLeast(1)
+                    if (paginationObj.has("total") && !paginationObj.isNull("total")) {
+                        totalFromPagination = paginationObj.optInt("total")
+                    }
+                }
+
+                dataObj.optJSONArray("applications")
+                    ?: rootObj.optJSONArray("applications")
+                    ?: rootObj.optJSONArray("data")
                     ?: throw IllegalArgumentException(
-                        "JSON object does not contain an applications array (keys: ${
+                        "Response JSON does not contain data.applications (keys: ${
                             rootObj.keys().asSequence().joinToString()
                         })"
                     )
             }
-            else -> throw IllegalArgumentException("Response is not valid JSON (starts with '${trimmed.take(24)}')")
+            else -> throw IllegalArgumentException("Response is not valid JSON: ${trimmed.take(80)}")
         }
 
-        val parsedList = mutableListOf<AppliedJobEntity>()
+        val parsedJobs = mutableListOf<AppliedJobEntity>()
+        val backendHistoryMap = mutableMapOf<String, List<SjpBackendStatusEntry>>()
         val now = System.currentTimeMillis()
 
-        for (i in 0 until jsonArray.length()) {
-            val itemObj = jsonArray.optJSONObject(i) ?: continue
-            val jobNested = itemObj.optJSONObject("job")
-                ?: itemObj.optJSONObject("post")
-                ?: itemObj.optJSONObject("jobDetail")
-                ?: itemObj.optJSONObject("vacancy")
+        for (i in 0 until appsArray.length()) {
+            val z = appsArray.optJSONObject(i) ?: continue
+            val j = z.optJSONObject("Job")
+                ?: z.optJSONObject("job")
+                ?: JSONObject()
+            val deptObj = j.optJSONObject("Department")
+                ?: j.optJSONObject("department")
+                ?: z.optJSONObject("Department")
+                ?: z.optJSONObject("department")
 
-            val deptNested = itemObj.optJSONObject("department")
-                ?: jobNested?.optJSONObject("department")
-                ?: itemObj.optJSONObject("organization")
+            val appId = extractString(z, "applicationId", "id", "appId")
+                ?: "SJP-${1000 + i}"
 
-            val candidateNested = itemObj.optJSONObject("candidate")
-                ?: itemObj.optJSONObject("applicant")
+            val jobTitle = extractString(j, "jobTitle", "title", "postTitle", "name")
+                ?: extractString(z, "jobTitle", "title")
+                ?: "Unknown job"
 
-            if (candidateName.isNullOrBlank() && candidateNested != null) {
-                candidateName = extractFirstNonBlank(candidateNested, "fullName", "name", "candidateName")
-            }
-            if (candidateCnic.isNullOrBlank() && candidateNested != null) {
-                candidateCnic = extractFirstNonBlank(candidateNested, "cnic", "nic")
-            }
+            val departmentName = extractString(deptObj, "departmentName", "name", "title")
+                ?: extractString(j, "departmentName")
+                ?: extractString(z, "departmentName")
+                ?: "Unknown department"
 
-            val appId = extractFirstNonBlank(
-                itemObj,
-                "applicationId", "application_id", "id", "appId", "trackingId", "trackingNo", "applicationNo"
-            ) ?: extractFirstNonBlank(jobNested, "id", "jobId")
-            ?: "SJP-APP-${1000 + i}"
-
-            val jobTitle = extractFirstNonBlank(
-                itemObj,
-                "jobTitle", "postTitle", "title", "designation", "postName", "positionName", "job_name"
-            ) ?: extractFirstNonBlank(
-                jobNested,
-                "title", "jobTitle", "postTitle", "designation", "name"
-            ) ?: "Sindh Government Post #$appId"
-
-            val departmentName = extractFirstNonBlank(
-                itemObj,
-                "departmentName", "department_name", "department", "ministry", "wing", "organizationName"
-            ) ?: extractFirstNonBlank(
-                deptNested,
-                "name", "departmentName", "title"
-            ) ?: extractFirstNonBlank(
-                jobNested,
-                "departmentName", "department"
-            ) ?: "Government of Sindh Department"
-
-            val rawBps = extractFirstNonBlank(
-                itemObj,
-                "bps", "bpsScale", "grade", "scale", "payScale", "bps_scale"
-            ) ?: extractFirstNonBlank(
-                jobNested,
-                "bps", "bpsScale", "grade", "scale"
-            ) ?: "BPS-15"
-
-            val bpsFormatted = if (rawBps.uppercase().startsWith("BPS")) {
-                rawBps.uppercase()
-            } else {
-                "BPS-$rawBps"
+            val rawBps = extractString(j, "bps", "bpsScale", "grade", "scale", "payScale")
+                ?: extractString(z, "bps", "bpsScale", "grade")
+                ?: ""
+            val bpsFormatted = when {
+                rawBps.isBlank() -> "SJP Post"
+                rawBps.uppercase().startsWith("BPS") -> rawBps.uppercase()
+                else -> "BPS-$rawBps"
             }
 
-            val advertisementNo = extractFirstNonBlank(
-                itemObj,
-                "advertisementNo", "advNo", "advertisementNumber", "jobCode", "refNo"
-            ) ?: extractFirstNonBlank(
-                jobNested,
-                "advertisementNo", "advNo", "jobCode", "code"
-            ) ?: "INF-KRY / SJP"
+            val advertisementNo = extractString(j, "advertisementNo", "advNo", "jobCode", "code")
+                ?: extractString(z, "advertisementNo", "advNo")
+                ?: ""
 
-            val appliedDate = extractFirstNonBlank(
-                itemObj,
-                "appliedDate", "createdAt", "appliedAt", "submissionDate", "dateApplied", "created_at"
-            )?.take(10) ?: "2026-09-15"
+            val rawApplicationStatus = extractString(
+                z,
+                "applicationStatus", "status", "currentStatus"
+            ) ?: "APPLIED"
 
-            // Extract the hidden backend status that sjp.gos.pk doesn't show on frontend
-            val rawBackendStatus = extractFirstNonBlank(
-                itemObj,
-                "status", "applicationStatus", "candidateStatus", "scrutinyStatus",
-                "subStatus", "internalStatus", "currentStatus", "stage", "selectionStatus"
-            ) ?: "Applied"
+            val jobOffered = z.optBoolean("jobOffered", false)
+            val jobInterviewStatus = extractString(j, "jobInterviewStatus", "interviewStatus")
+                ?: extractString(z, "jobInterviewStatus", "interviewStatus")
+                ?: "—"
 
-            val frontendMaskedStatus = extractFirstNonBlank(
-                itemObj,
-                "publicStatus", "portalStatus", "frontendStatus", "displayStatus"
-            ) ?: "Submitted"
+            val hasOfferRecord = z.has("Offer") && !z.isNull("Offer") &&
+                z.opt("Offer").toString().isNotBlank() &&
+                z.opt("Offer").toString() != "null" &&
+                z.opt("Offer").toString() != "false"
 
-            val remarks = extractFirstNonBlank(
-                itemObj,
-                "remarks", "scrutinyRemarks", "comments", "reason", "rejectionReason",
-                "adminNotes", "verificationNote", "statusRemarks", "notes"
-            ) ?: "Backend status retrieved via getAllAppliedJobsByCandidate"
+            val reasonForRejected = extractString(
+                z,
+                "reasonForRejected", "rejectionReason", "remarks", "scrutinyRemarks"
+            ) ?: "—"
 
-            val meritScore = extractFirstNonBlank(
-                itemObj,
-                "meritScore", "testScore", "stsScore", "AggregateScore", "marks", "score", "percentage"
-            ) ?: "N/A"
+            // Parse ApplicationStatuses array from z.ApplicationStatuses
+            val histArray = z.optJSONArray("ApplicationStatuses")
+                ?: z.optJSONArray("applicationStatuses")
+                ?: JSONArray()
 
-            val normalizedStatus = ApplicationStatus.fromRawStatus(rawBackendStatus)
+            val historyEntries = mutableListOf<SjpBackendStatusEntry>()
+            for (hIdx in 0 until histArray.length()) {
+                val x = histArray.optJSONObject(hIdx) ?: continue
+                val st = extractString(x, "status", "applicationStatus") ?: continue
+                val changedAtRaw = extractString(x, "changedAt", "createdAt", "updatedAt") ?: ""
+                val changedMillis = parseIsoTimestamp(changedAtRaw) ?: (now - (histArray.length() - hIdx) * 1000L)
+                historyEntries.add(
+                    SjpBackendStatusEntry(
+                        status = st,
+                        changedAt = formatDisplayTimestamp(changedAtRaw, changedMillis),
+                        changedAtMillis = changedMillis
+                    )
+                )
+            }
+            backendHistoryMap[appId] = historyEntries
+
+            val appliedDate = historyEntries.minByOrNull { it.changedAtMillis }?.changedAt
+                ?: extractString(z, "createdAt", "appliedDate", "appliedAt")?.let {
+                    formatDisplayTimestamp(it, parseIsoTimestamp(it) ?: now)
+                }
+                ?: "—"
+
+            val normalizedStatus = ApplicationStatus.fromRawStatus(rawApplicationStatus)
             val existing = existingJobsMap[appId]
             val statusChanged = existing != null &&
-                (existing.normalizedStatusCode != normalizedStatus.code ||
-                    !existing.rawStatusString.equals(rawBackendStatus, ignoreCase = true))
+                (!existing.rawStatusString.equals(rawApplicationStatus, ignoreCase = true) ||
+                    existing.jobOffered != jobOffered ||
+                    existing.jobInterviewStatus != jobInterviewStatus ||
+                    existing.hasOfferRecord != hasOfferRecord ||
+                    existing.reasonForRejected != reasonForRejected)
 
-            parsedList.add(
+            parsedJobs.add(
                 AppliedJobEntity(
                     applicationId = appId,
                     jobTitle = jobTitle,
@@ -161,12 +194,14 @@ object SjpPayloadParser {
                     bpsScale = bpsFormatted,
                     advertisementNo = advertisementNo,
                     appliedDate = appliedDate,
-                    rawStatusString = rawBackendStatus,
+                    rawStatusString = rawApplicationStatus,
                     normalizedStatusCode = normalizedStatus.code,
-                    frontendMaskedStatus = frontendMaskedStatus,
-                    backendRemarks = remarks,
-                    meritScore = meritScore,
-                    rawJsonPayload = itemObj.toString(2),
+                    jobOffered = jobOffered,
+                    jobInterviewStatus = jobInterviewStatus,
+                    hasOfferRecord = hasOfferRecord,
+                    reasonForRejected = reasonForRejected,
+                    statusHistoryJson = histArray.toString(),
+                    rawJsonPayload = z.toString(2),
                     userNotes = existing?.userNotes ?: "",
                     interviewTimestamp = existing?.interviewTimestamp,
                     lastUpdatedTimestamp = now,
@@ -176,151 +211,81 @@ object SjpPayloadParser {
         }
 
         return ParseOutcome(
-            jobs = parsedList,
-            candidateName = candidateName,
-            candidateCnic = candidateCnic
+            jobs = parsedJobs,
+            backendHistoryMap = backendHistoryMap,
+            totalApplications = totalFromPagination ?: parsedJobs.size,
+            totalPages = totalPages,
+            currentPage = currentPage
         )
     }
 
-    private fun findApplicationsArray(root: JSONObject): JSONArray? {
-        val candidateArrayKeys = listOf(
-            "data", "applications", "appliedJobs", "result", "items",
-            "records", "content", "payload", "response", "jobs"
-        )
-        for (key in candidateArrayKeys) {
-            val arr = root.optJSONArray(key)
-            if (arr != null) return arr
-        }
-        // Check one level deeper (e.g., { data: { applications: [...] } })
-        for (key in candidateArrayKeys) {
-            val nestedObj = root.optJSONObject(key) ?: continue
-            for (subKey in candidateArrayKeys) {
-                val subArr = nestedObj.optJSONArray(subKey)
-                if (subArr != null) return subArr
+    fun parseBackendHistoryJson(statusHistoryJson: String): List<SjpBackendStatusEntry> {
+        if (statusHistoryJson.isBlank()) return emptyList()
+        val result = mutableListOf<SjpBackendStatusEntry>()
+        return try {
+            val arr = JSONArray(statusHistoryJson)
+            for (i in 0 until arr.length()) {
+                val x = arr.optJSONObject(i) ?: continue
+                val st = extractString(x, "status", "applicationStatus") ?: continue
+                val changedAtRaw = extractString(x, "changedAt", "createdAt", "updatedAt") ?: ""
+                val millis = parseIsoTimestamp(changedAtRaw) ?: 0L
+                result.add(
+                    SjpBackendStatusEntry(
+                        status = st,
+                        changedAt = formatDisplayTimestamp(changedAtRaw, millis),
+                        changedAtMillis = millis
+                    )
+                )
             }
+            result
+        } catch (_: Exception) {
+            emptyList()
         }
-        // Fallback: scan any key that holds a JSONArray
-        val keys = root.keys()
-        while (keys.hasNext()) {
-            val k = keys.next()
-            val arr = root.optJSONArray(k)
-            if (arr != null) return arr
-        }
-        return null
     }
 
-    private fun extractFirstNonBlank(obj: JSONObject?, vararg keys: String): String? {
+    private fun extractString(obj: JSONObject?, vararg keys: String): String? {
         if (obj == null) return null
-        for (key in keys) {
-            if (!obj.has(key) || obj.isNull(key)) continue
-            val value = obj.opt(key)
-            if (value is JSONObject) {
-                val nestedName = extractFirstNonBlank(value, "name", "title", "label", "status", "value")
-                if (!nestedName.isNullOrBlank()) return nestedName
-            } else if (value != null) {
-                val str = value.toString().trim()
-                if (str.isNotEmpty() && str != "null") return str
+        for (k in keys) {
+            if (!obj.has(k) || obj.isNull(k)) continue
+            val v = obj.opt(k)?.toString()?.trim()
+            if (!v.isNullOrEmpty() && v != "null") return v
+        }
+        return null
+    }
+
+    private fun parseIsoTimestamp(raw: String): Long? {
+        if (raw.isBlank()) return null
+        val patterns = listOf(
+            "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
+            "yyyy-MM-dd'T'HH:mm:ss'Z'",
+            "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
+            "yyyy-MM-dd'T'HH:mm:ssXXX",
+            "yyyy-MM-dd HH:mm:ss",
+            "yyyy-MM-dd"
+        )
+        for (pattern in patterns) {
+            try {
+                val sdf = SimpleDateFormat(pattern, Locale.US)
+                if (pattern.endsWith("'Z'")) {
+                    sdf.timeZone = TimeZone.getTimeZone("UTC")
+                }
+                val parsed = sdf.parse(raw)
+                if (parsed != null) return parsed.time
+            } catch (_: Exception) {
             }
         }
         return null
     }
 
-    /**
-     * Generates a realistic SJP `api/v2/candidates/application/getAllAppliedJobsByCandidate`
-     * diagnostic JSON payload so users can test Raw JSON inspection, Status Diffs,
-     * and Push Notifications right away or compare against their live portal account.
-     */
-    fun createDiagnosticSampleJson(): String {
-        return """
-        {
-          "status": 200,
-          "message": "Candidate applied jobs retrieved successfully",
-          "endpoint": "api/v2/candidates/application/getAllAppliedJobsByCandidate",
-          "candidateName": "Sindh Portal Candidate",
-          "candidateCnic": "41304-*******-3",
-          "data": [
-            {
-              "applicationId": "SJP-2026-88412",
-              "jobTitle": "Assistant Director (IT / E-Governance)",
-              "departmentName": "Information, Science & Technology Department",
-              "bpsScale": "BPS-17",
-              "advertisementNo": "INF-KRY-4418/26",
-              "appliedDate": "2026-08-14",
-              "frontendStatus": "Submitted",
-              "status": "shortlisted",
-              "scrutinyRemarks": "Domicile Form-D, PEC/HEC degree & STS score (78.5%) verified by Departmental Scrutiny Committee.",
-              "meritScore": "78.5 / 100",
-              "districtQuota": "Hyderabad / Urban",
-              "interviewCenter": "Karachi Secretariat Committee Room #2"
-            },
-            {
-              "applicationId": "SJP-2026-87905",
-              "jobTitle": "Data Processing Officer",
-              "departmentName": "Finance Department (Treasury & Accounts)",
-              "bpsScale": "BPS-16",
-              "advertisementNo": "FD-SO(B&E)-119/26",
-              "appliedDate": "2026-08-02",
-              "frontendStatus": "Submitted",
-              "status": "temporary shortlisted",
-              "scrutinyRemarks": "Provisionally shortlisted subject to original PRC & experience certificate attestation before interview.",
-              "meritScore": "74.0 / 100",
-              "districtQuota": "Sindh Merit",
-              "scrutinyOfficerCode": "SCR-FIN-09"
-            },
-            {
-              "applicationId": "SJP-2026-84210",
-              "jobTitle": "Inspector Revenue / Mukhtiarkar",
-              "departmentName": "Board of Revenue Sindh",
-              "bpsScale": "BPS-16",
-              "advertisementNo": "BOR-ESTT-2026/08",
-              "appliedDate": "2026-07-19",
-              "frontendStatus": "Submitted",
-              "status": "temporary offered",
-              "scrutinyRemarks": "Interview cleared (Merit #14). Provisional offer letter queued pending police character verification.",
-              "meritScore": "83.2 / 100",
-              "districtQuota": "Hyderabad Division"
-            },
-            {
-              "applicationId": "SJP-2026-81034",
-              "jobTitle": "Junior Clerk (IT Cadre)",
-              "departmentName": "School Education & Literacy Department",
-              "bpsScale": "BPS-11",
-              "advertisementNo": "SELD-REC-2026/31",
-              "appliedDate": "2026-06-28",
-              "frontendStatus": "Submitted",
-              "status": "offered",
-              "scrutinyRemarks": "Final Appointment Offer approved by DRC. Typing speed 42 WPM verified.",
-              "meritScore": "86.0 / 100",
-              "districtQuota": "District Merit"
-            },
-            {
-              "applicationId": "SJP-2026-89102",
-              "jobTitle": "Monitoring & Evaluation Assistant",
-              "departmentName": "Planning & Development Department",
-              "bpsScale": "BPS-14",
-              "advertisementNo": "P&D-MEC-772/26",
-              "appliedDate": "2026-09-05",
-              "frontendStatus": "Submitted",
-              "status": "under scrutiny",
-              "scrutinyRemarks": "Initial STS threshold met; academic transcripts queued for HEC verification.",
-              "meritScore": "69.5 / 100",
-              "districtQuota": "Sindh Rural"
-            },
-            {
-              "applicationId": "SJP-2026-79511",
-              "jobTitle": "Statistical Officer",
-              "departmentName": "Bureau of Statistics (P&D Sindh)",
-              "bpsScale": "BPS-16",
-              "advertisementNo": "BOS-SINDH-104/26",
-              "appliedDate": "2026-06-10",
-              "frontendStatus": "Submitted",
-              "status": "rejected",
-              "scrutinyRemarks": "Post-qualification 2-year field experience in Economics/Statistics not attached in portal profile.",
-              "meritScore": "62.0 / 100",
-              "districtQuota": "Open Merit"
+    private fun formatDisplayTimestamp(raw: String, millis: Long): String {
+        if (millis > 0L) {
+            return try {
+                val outFmt = SimpleDateFormat("MMM dd, yyyy, hh:mm a", Locale.US)
+                outFmt.format(Date(millis))
+            } catch (_: Exception) {
+                raw
             }
-          ]
         }
-        """.trimIndent()
+        return raw.ifBlank { "—" }
     }
 }

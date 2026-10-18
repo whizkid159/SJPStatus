@@ -7,14 +7,16 @@ import com.example.data.ApplicationStatus
 import com.example.data.AppliedJobEntity
 import com.example.data.SessionPreferencesRepository
 import com.example.data.SjpDatabase
-import com.example.data.SjpPayloadParser
 import com.example.data.SjpRepository
 import com.example.data.SjpSessionState
 import com.example.data.StatusHistoryEntity
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
@@ -53,7 +55,9 @@ data class SjpUiState(
     val offeredTotalCount: Int
         get() = allJobs.count {
             it.statusEnum == ApplicationStatus.OFFERED ||
-                it.statusEnum == ApplicationStatus.TEMP_OFFERED
+                it.statusEnum == ApplicationStatus.TEMP_OFFERED ||
+                it.jobOffered ||
+                it.hasOfferRecord
         }
     val rejectedTotalCount: Int
         get() = allJobs.count { it.statusEnum == ApplicationStatus.REJECTED }
@@ -77,6 +81,10 @@ class SjpTrackerViewModel(application: Application) : AndroidViewModel(applicati
 
     private val controlState = MutableStateFlow(InternalControlState())
 
+    // Trigger emitted whenever the app wants the embedded WebView to execute the multi-page JS fetch
+    private val _webViewFetchRequests = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val webViewFetchRequests: SharedFlow<Unit> = _webViewFetchRequests.asSharedFlow()
+
     val uiState: StateFlow<SjpUiState> = combine(
         repository.jobsFlow,
         repository.historyFlow,
@@ -88,9 +96,9 @@ class SjpTrackerViewModel(application: Application) : AndroidViewModel(applicati
             val matchesQuery = f.searchQuery.isBlank() ||
                 job.jobTitle.contains(f.searchQuery, ignoreCase = true) ||
                 job.departmentName.contains(f.searchQuery, ignoreCase = true) ||
-                job.bpsScale.contains(f.searchQuery, ignoreCase = true) ||
                 job.rawStatusString.contains(f.searchQuery, ignoreCase = true) ||
-                job.applicationId.contains(f.searchQuery, ignoreCase = true)
+                job.applicationId.contains(f.searchQuery, ignoreCase = true) ||
+                job.reasonForRejected.contains(f.searchQuery, ignoreCase = true)
 
             val matchesStatus = f.selectedStatus == null || job.statusEnum == f.selectedStatus
             val matchesDept = f.selectedDepartment == null || job.departmentName == f.selectedDepartment
@@ -122,27 +130,26 @@ class SjpTrackerViewModel(application: Application) : AndroidViewModel(applicati
     )
 
     init {
-        // Seed initial diagnostic SJP dataset on first launch so dashboard, raw JSON inspector,
-        // and analytics charts are immediately populated and interactive.
+        // On app startup, if an SJP session already exists (from persisted cookies/tokens),
+        // automatically poll https://usr-svc.sjp.gos.pk/api/v2/candidates/application/getAllAppliedJobsByCandidate
         viewModelScope.launch {
-            val currentJobs = database.sjpDao().getAllJobsSnapshot()
-            if (currentJobs.isEmpty()) {
-                repository.ingestRawApiPayload(
-                    rawJson = SjpPayloadParser.createDiagnosticSampleJson(),
-                    sourceLabel = "SJP Sample Telemetry",
-                    isSandbox = true
-                )
+            val session = sessionPrefs.sessionFlow.first()
+            val combinedCookies = repository.getCombinedPortalCookies(session.cookieHeader)
+            if (combinedCookies.isNotBlank() || session.bearerToken.isNotBlank()) {
+                syncFromPortalApi()
             }
         }
 
-        // Start 30-minute background polling loop while app process is alive
+        // Start 30-minute background polling loop while app is running
         viewModelScope.launch {
             while (isActive) {
                 val session = sessionPrefs.sessionFlow.first()
                 val intervalMs = (session.pollingIntervalMinutes.coerceAtLeast(5)) * 60_000L
                 delay(intervalMs)
                 val latestSession = sessionPrefs.sessionFlow.first()
-                if (latestSession.autoPollEnabled && latestSession.hasActiveSession) {
+                val combinedCookies = repository.getCombinedPortalCookies(latestSession.cookieHeader)
+                if (latestSession.autoPollEnabled && (combinedCookies.isNotBlank() || latestSession.bearerToken.isNotBlank())) {
+                    _webViewFetchRequests.tryEmit(Unit)
                     controlState.value = controlState.value.copy(isSyncing = true)
                     val res = repository.pollEndpointFromNetwork()
                     controlState.value = controlState.value.copy(
@@ -216,6 +223,7 @@ class SjpTrackerViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun syncFromPortalApi() {
+        _webViewFetchRequests.tryEmit(Unit)
         viewModelScope.launch {
             controlState.value = controlState.value.copy(isSyncing = true)
             val result = repository.pollEndpointFromNetwork()
@@ -240,13 +248,15 @@ class SjpTrackerViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    fun onWebViewPayloadCaptured(rawJson: String, sourceLabel: String = "SJP Portal Browser Fetch") {
+    fun onWebViewPayloadCaptured(
+        rawJson: String,
+        sourceLabel: String = "SJP Portal Live Fetch"
+    ) {
         viewModelScope.launch {
             controlState.value = controlState.value.copy(isSyncing = true)
             val result = repository.ingestRawApiPayload(
                 rawJson = rawJson,
-                sourceLabel = sourceLabel,
-                isSandbox = false
+                sourceLabel = sourceLabel
             )
             controlState.value = controlState.value.copy(
                 isSyncing = false,
@@ -255,30 +265,11 @@ class SjpTrackerViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    fun loadDiagnosticSamplePayload() {
-        viewModelScope.launch {
-            controlState.value = controlState.value.copy(isSyncing = true)
-            val result = repository.ingestRawApiPayload(
-                rawJson = SjpPayloadParser.createDiagnosticSampleJson(),
-                sourceLabel = "Diagnostic SJP Dataset",
-                isSandbox = true
-            )
-            controlState.value = controlState.value.copy(
-                isSyncing = false,
-                bannerFeedback = result.message
-            )
-        }
-    }
-
-    fun simulateStatusUpdateAlert() {
-        viewModelScope.launch {
-            controlState.value = controlState.value.copy(isSyncing = true)
-            val result = repository.simulateBackendStatusTransition()
-            controlState.value = controlState.value.copy(
-                isSyncing = false,
-                bannerFeedback = result.message
-            )
-        }
+    fun onWebViewFetchError(errorMsg: String) {
+        controlState.value = controlState.value.copy(
+            isSyncing = false,
+            bannerFeedback = errorMsg
+        )
     }
 
     fun saveJobNotesAndInterview(
@@ -289,7 +280,7 @@ class SjpTrackerViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch {
             repository.updateJobNotesAndInterview(applicationId, notes, interviewTimestamp)
             controlState.value = controlState.value.copy(
-                bannerFeedback = "Saved personal notes & reminder for $applicationId"
+                bannerFeedback = "Saved notes & interview reminder for Application #$applicationId"
             )
         }
     }
@@ -320,16 +311,17 @@ class SjpTrackerViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch {
             repository.markAllHistoryRead()
             controlState.value = controlState.value.copy(
-                bannerFeedback = "Marked all status diffs as read"
+                bannerFeedback = "Marked all status updates as read"
             )
         }
     }
 
-    fun clearSessionCredentials() {
+    fun clearSessionAndData() {
         viewModelScope.launch {
             sessionPrefs.clearSession()
+            repository.clearAllTrackedData()
             controlState.value = controlState.value.copy(
-                bannerFeedback = "Cleared saved SJP session credentials"
+                bannerFeedback = "Cleared SJP session and local cache"
             )
         }
     }
@@ -344,15 +336,14 @@ class SjpTrackerViewModel(application: Application) : AndroidViewModel(applicati
             "Application ID",
             "Job Title",
             "Department",
-            "BPS Scale",
-            "Advertisement No",
-            "Applied Date",
-            "Portal UI Status",
-            "Hidden Backend Status",
-            "Merit Score"
+            "Current Status",
+            "Job Offered",
+            "Interview Status",
+            "Offer Record",
+            "Applied Date"
         )
-        if (includeRemarks) headers.add("Backend Scrutiny Remarks")
-        if (includeNotes) headers.add("Candidate Notes")
+        if (includeRemarks) headers.add("Rejection Reason")
+        if (includeNotes) headers.add("Personal Notes")
         sb.appendLine(headers.joinToString(","))
 
         for (job in jobs) {
@@ -360,14 +351,13 @@ class SjpTrackerViewModel(application: Application) : AndroidViewModel(applicati
                 escapeCsv(job.applicationId),
                 escapeCsv(job.jobTitle),
                 escapeCsv(job.departmentName),
-                escapeCsv(job.bpsScale),
-                escapeCsv(job.advertisementNo),
-                escapeCsv(job.appliedDate),
-                escapeCsv(job.frontendMaskedStatus),
-                escapeCsv(job.statusEnum.displayLabel),
-                escapeCsv(job.meritScore)
+                escapeCsv(job.rawStatusString),
+                escapeCsv(if (job.jobOffered) "YES" else "NO"),
+                escapeCsv(job.jobInterviewStatus),
+                escapeCsv(if (job.hasOfferRecord) "PRESENT" else "NONE"),
+                escapeCsv(job.appliedDate)
             )
-            if (includeRemarks) row.add(escapeCsv(job.backendRemarks))
+            if (includeRemarks) row.add(escapeCsv(job.reasonForRejected))
             if (includeNotes) row.add(escapeCsv(job.userNotes))
             sb.appendLine(row.joinToString(","))
         }
@@ -385,8 +375,8 @@ class SjpTrackerViewModel(application: Application) : AndroidViewModel(applicati
         sb.appendLine("   SJP PULSE — CANDIDATE APPLICATION STATUS REPORT")
         sb.appendLine("==================================================")
         sb.appendLine("Generated: ${fmt.format(Date())}")
-        sb.appendLine("Source: sjp.gos.pk/api/v2/candidates/application/getAllAppliedJobsByCandidate")
-        sb.appendLine("Total Filtered Applications: ${jobs.size}")
+        sb.appendLine("Endpoint: usr-svc.sjp.gos.pk/api/v2/candidates/application/getAllAppliedJobsByCandidate")
+        sb.appendLine("Total Applications: ${jobs.size}")
         sb.appendLine("--------------------------------------------------")
         sb.appendLine()
 
@@ -396,14 +386,15 @@ class SjpTrackerViewModel(application: Application) : AndroidViewModel(applicati
             if (list.isEmpty()) continue
             sb.appendLine("▶ ${status.displayLabel.uppercase()} (${list.size})")
             for (job in list) {
-                sb.appendLine("  • [${job.bpsScale}] ${job.jobTitle}")
-                sb.appendLine("    Dept: ${job.departmentName} | ID: ${job.applicationId}")
-                sb.appendLine("    Portal UI: ${job.frontendMaskedStatus} -> Backend API: ${job.rawStatusString} (Score: ${job.meritScore})")
-                if (includeRemarks && job.backendRemarks.isNotBlank()) {
-                    sb.appendLine("    Remarks: ${job.backendRemarks}")
+                sb.appendLine("  • ${job.jobTitle}")
+                sb.appendLine("    Department: ${job.departmentName}")
+                sb.appendLine("    Application ID: ${job.applicationId} | Current Status: ${job.rawStatusString}")
+                sb.appendLine("    Job Offered: ${if (job.jobOffered) "YES" else "NO"} | Interview: ${job.jobInterviewStatus} | Offer Record: ${if (job.hasOfferRecord) "PRESENT" else "NONE"}")
+                if (includeRemarks && job.reasonForRejected.isNotBlank() && job.reasonForRejected != "—") {
+                    sb.appendLine("    Rejection Reason: ${job.reasonForRejected}")
                 }
                 if (includeNotes && job.userNotes.isNotBlank()) {
-                    sb.appendLine("    My Notes: ${job.userNotes}")
+                    sb.appendLine("    Personal Notes: ${job.userNotes}")
                 }
                 sb.appendLine()
             }

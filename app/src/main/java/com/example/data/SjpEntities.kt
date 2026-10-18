@@ -3,6 +3,12 @@ package com.example.data
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 
+data class SjpBackendStatusEntry(
+    val status: String,
+    val changedAt: String,
+    val changedAtMillis: Long
+)
+
 @Entity(tableName = "applied_jobs")
 data class AppliedJobEntity(
     @PrimaryKey
@@ -14,9 +20,11 @@ data class AppliedJobEntity(
     val appliedDate: String,
     val rawStatusString: String,
     val normalizedStatusCode: String,
-    val frontendMaskedStatus: String,
-    val backendRemarks: String,
-    val meritScore: String,
+    val jobOffered: Boolean,
+    val jobInterviewStatus: String,
+    val hasOfferRecord: Boolean,
+    val reasonForRejected: String,
+    val statusHistoryJson: String,
     val rawJsonPayload: String,
     val userNotes: String = "",
     val interviewTimestamp: Long? = null,
@@ -40,6 +48,7 @@ data class StatusHistoryEntity(
     val previousRawStatus: String,
     val newRawStatus: String,
     val remarksSnapshot: String,
+    val changedAtFormatted: String = "",
     val detectedAtTimestamp: Long = System.currentTimeMillis(),
     val isUnread: Boolean = true
 ) {

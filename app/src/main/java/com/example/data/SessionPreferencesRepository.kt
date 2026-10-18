@@ -10,22 +10,26 @@ import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
-private val Context.sjpDataStore by preferencesDataStore(name = "sjp_session_preferences")
+private val Context.sjpDataStore by preferencesDataStore(name = "sjp_session_preferences_v2")
+
+const val DEFAULT_SJP_API_URL =
+    "https://usr-svc.sjp.gos.pk/api/v2/candidates/application/getAllAppliedJobsByCandidate"
 
 data class SjpSessionState(
     val bearerToken: String = "",
     val cookieHeader: String = "",
     val candidateName: String = "",
     val candidateCnic: String = "",
-    val customEndpointUrl: String = "https://sjp.gos.pk/api/v2/candidates/application/getAllAppliedJobsByCandidate",
+    val customEndpointUrl: String = DEFAULT_SJP_API_URL,
     val pollingIntervalMinutes: Int = 30,
     val autoPollEnabled: Boolean = true,
     val lastPollTimestamp: Long = 0L,
     val nextPollTimestamp: Long = 0L,
-    val lastPollMessage: String = "Ready to sync with sjp.gos.pk",
+    val lastPollMessage: String = "Sign in to sjp.gos.pk to fetch your applications",
     val lastPollSuccess: Boolean = true,
     val totalPollCount: Int = 0,
-    val isSandboxLoaded: Boolean = false
+    val totalApplicationsOnServer: Int = 0,
+    val totalPagesOnServer: Int = 1
 ) {
     val hasActiveSession: Boolean
         get() = bearerToken.isNotBlank() || cookieHeader.isNotBlank()
@@ -46,7 +50,8 @@ class SessionPreferencesRepository(private val context: Context) {
         val LAST_POLL_MSG = stringPreferencesKey("last_poll_msg")
         val LAST_POLL_SUCCESS = booleanPreferencesKey("last_poll_success")
         val TOTAL_POLL_COUNT = intPreferencesKey("total_poll_count")
-        val IS_SANDBOX_LOADED = booleanPreferencesKey("is_sandbox_loaded")
+        val TOTAL_APPS_ON_SERVER = intPreferencesKey("total_apps_on_server")
+        val TOTAL_PAGES_ON_SERVER = intPreferencesKey("total_pages_on_server")
     }
 
     val sessionFlow: Flow<SjpSessionState> = context.sjpDataStore.data.map { prefs ->
@@ -55,16 +60,17 @@ class SessionPreferencesRepository(private val context: Context) {
             cookieHeader = prefs[Keys.COOKIE_HEADER] ?: "",
             candidateName = prefs[Keys.CANDIDATE_NAME] ?: "",
             candidateCnic = prefs[Keys.CANDIDATE_CNIC] ?: "",
-            customEndpointUrl = prefs[Keys.CUSTOM_ENDPOINT]
-                ?: "https://sjp.gos.pk/api/v2/candidates/application/getAllAppliedJobsByCandidate",
+            customEndpointUrl = prefs[Keys.CUSTOM_ENDPOINT] ?: DEFAULT_SJP_API_URL,
             pollingIntervalMinutes = prefs[Keys.POLL_INTERVAL_MINS] ?: 30,
             autoPollEnabled = prefs[Keys.AUTO_POLL_ENABLED] ?: true,
             lastPollTimestamp = prefs[Keys.LAST_POLL_TIME] ?: 0L,
             nextPollTimestamp = prefs[Keys.NEXT_POLL_TIME] ?: 0L,
-            lastPollMessage = prefs[Keys.LAST_POLL_MSG] ?: "Ready to sync with sjp.gos.pk",
+            lastPollMessage = prefs[Keys.LAST_POLL_MSG]
+                ?: "Sign in to sjp.gos.pk to fetch your applications",
             lastPollSuccess = prefs[Keys.LAST_POLL_SUCCESS] ?: true,
             totalPollCount = prefs[Keys.TOTAL_POLL_COUNT] ?: 0,
-            isSandboxLoaded = prefs[Keys.IS_SANDBOX_LOADED] ?: false
+            totalApplicationsOnServer = prefs[Keys.TOTAL_APPS_ON_SERVER] ?: 0,
+            totalPagesOnServer = prefs[Keys.TOTAL_PAGES_ON_SERVER] ?: 1
         )
     }
 
@@ -76,7 +82,11 @@ class SessionPreferencesRepository(private val context: Context) {
     ) {
         context.sjpDataStore.edit { prefs ->
             if (!bearerToken.isNullOrBlank()) {
-                val cleaned = bearerToken.removePrefix("Bearer ").removePrefix("bearer ").trim()
+                val cleaned = bearerToken
+                    .removePrefix("Bearer ")
+                    .removePrefix("bearer ")
+                    .trim()
+                    .removeSurrounding("\"")
                 if (cleaned.isNotBlank() && cleaned != "null" && cleaned != "undefined") {
                     prefs[Keys.BEARER_TOKEN] = cleaned
                 }
@@ -111,7 +121,8 @@ class SessionPreferencesRepository(private val context: Context) {
         success: Boolean,
         message: String,
         intervalMinutes: Int,
-        isSandbox: Boolean? = null
+        totalAppsOnServer: Int? = null,
+        totalPagesOnServer: Int? = null
     ) {
         val now = System.currentTimeMillis()
         val next = now + intervalMinutes * 60_000L
@@ -122,8 +133,11 @@ class SessionPreferencesRepository(private val context: Context) {
             prefs[Keys.LAST_POLL_SUCCESS] = success
             val currentCount = prefs[Keys.TOTAL_POLL_COUNT] ?: 0
             prefs[Keys.TOTAL_POLL_COUNT] = currentCount + 1
-            if (isSandbox != null) {
-                prefs[Keys.IS_SANDBOX_LOADED] = isSandbox
+            if (totalAppsOnServer != null) {
+                prefs[Keys.TOTAL_APPS_ON_SERVER] = totalAppsOnServer
+            }
+            if (totalPagesOnServer != null) {
+                prefs[Keys.TOTAL_PAGES_ON_SERVER] = totalPagesOnServer
             }
         }
     }
@@ -134,7 +148,9 @@ class SessionPreferencesRepository(private val context: Context) {
             prefs[Keys.COOKIE_HEADER] = ""
             prefs[Keys.CANDIDATE_NAME] = ""
             prefs[Keys.CANDIDATE_CNIC] = ""
-            prefs[Keys.LAST_POLL_MSG] = "Session cleared"
+            prefs[Keys.LAST_POLL_MSG] = "Session cleared. Please log in on the SJP Portal tab."
+            prefs[Keys.TOTAL_APPS_ON_SERVER] = 0
+            prefs[Keys.TOTAL_PAGES_ON_SERVER] = 1
         }
     }
 }

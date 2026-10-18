@@ -12,51 +12,51 @@ enum class ApplicationStatus(
 ) {
     OFFERED(
         code = "OFFERED",
-        displayLabel = "Offered",
+        displayLabel = "Offered / Joined",
         shortLabel = "Offered",
-        description = "Final offer issued in backend recruitment pipeline",
+        description = "Job offered or joined on Sindh Job Portal",
         funnelOrder = 6
     ),
     TEMP_OFFERED(
         code = "TEMP_OFFERED",
         displayLabel = "Temporary Offered",
         shortLabel = "Temp Offered",
-        description = "Provisional offer pending final document verification",
+        description = "Provisional offer in backend pipeline",
         funnelOrder = 5
     ),
     SHORTLISTED(
         code = "SHORTLISTED",
-        displayLabel = "Shortlisted",
+        displayLabel = "Shortlisted / Interview",
         shortLabel = "Shortlisted",
-        description = "Verified and shortlisted for interview or next phase",
+        description = "Shortlisted or scheduled for interview",
         funnelOrder = 4
     ),
     TEMP_SHORTLISTED(
         code = "TEMP_SHORTLISTED",
-        displayLabel = "Temporary Shortlisted",
-        shortLabel = "Temp Shortlisted",
-        description = "Provisionally shortlisted in hidden backend scrutiny",
+        displayLabel = "Temp Shortlisted / Waiting",
+        shortLabel = "Temp / Waiting",
+        description = "Temporarily shortlisted or on waiting list",
         funnelOrder = 3
     ),
     UNDER_SCRUTINY(
         code = "UNDER_SCRUTINY",
         displayLabel = "Under Scrutiny",
         shortLabel = "Scrutiny",
-        description = "Application is undergoing departmental verification",
+        description = "Application under departmental review",
         funnelOrder = 2
     ),
     APPLIED(
         code = "APPLIED",
         displayLabel = "Applied / Submitted",
         shortLabel = "Applied",
-        description = "Submitted on portal; awaiting backend status transition",
+        description = "Application submitted",
         funnelOrder = 1
     ),
     REJECTED(
         code = "REJECTED",
         displayLabel = "Rejected",
         shortLabel = "Rejected",
-        description = "Marked ineligible or rejected in backend scrutiny",
+        description = "Marked rejected in backend status",
         funnelOrder = 0
     );
 
@@ -75,19 +75,16 @@ enum class ApplicationStatus(
     companion object {
         fun fromRawStatus(raw: String?): ApplicationStatus {
             if (raw.isNullOrBlank()) return APPLIED
-            val normalized = raw.trim().lowercase()
-                .replace("_", " ")
-                .replace("-", " ")
+            val upper = raw.trim().uppercase()
+            val normalized = upper.replace("_", " ").replace("-", " ")
 
             return when {
-                normalized.contains("temp") && normalized.contains("offer") -> TEMP_OFFERED
-                normalized.contains("provisional") && normalized.contains("offer") -> TEMP_OFFERED
-                normalized.contains("offer") || normalized.contains("selected") || normalized.contains("appointed") -> OFFERED
-                normalized.contains("temp") && normalized.contains("shortlist") -> TEMP_SHORTLISTED
-                normalized.contains("provisional") && normalized.contains("shortlist") -> TEMP_SHORTLISTED
-                normalized.contains("shortlist") || normalized.contains("eligible") || normalized.contains("qualified") -> SHORTLISTED
-                normalized.contains("reject") || normalized.contains("ineligible") || normalized.contains("disqualif") || normalized.contains("not eligible") -> REJECTED
-                normalized.contains("scrutin") || normalized.contains("review") || normalized.contains("verif") || normalized.contains("process") -> UNDER_SCRUTINY
+                normalized.contains("REJECTED") || normalized.contains("DISQUALIF") || normalized.contains("INELIGIBLE") -> REJECTED
+                normalized.contains("TEMP") && normalized.contains("OFFER") -> TEMP_OFFERED
+                normalized.contains("OFFERED") || normalized.contains("JOINED") || normalized.contains("SELECTED") || normalized.contains("APPOINTED") -> OFFERED
+                normalized.contains("WAITING") || (normalized.contains("TEMP") && normalized.contains("SHORTLIST")) -> TEMP_SHORTLISTED
+                normalized.contains("SHORTLISTED") || normalized.contains("INTERVIEW") || normalized.contains("QUALIFIED") -> SHORTLISTED
+                normalized.contains("SCRUTIN") || normalized.contains("REVIEW") || normalized.contains("VERIF") -> UNDER_SCRUTINY
                 else -> APPLIED
             }
         }

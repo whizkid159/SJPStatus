@@ -3,7 +3,6 @@ package com.example.ui
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -14,7 +13,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
@@ -22,7 +20,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
@@ -30,10 +27,10 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.data.ApplicationStatus
 import com.example.data.AppliedJobEntity
+import com.example.data.SjpPayloadParser
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -44,7 +41,6 @@ fun DashboardScreen(
     uiState: SjpUiState,
     onSyncNow: () -> Unit,
     onOpenPortalTab: () -> Unit,
-    onSimulateStatusAlert: () -> Unit,
     onSearchQueryChange: (String) -> Unit,
     onStatusFilterSelect: (ApplicationStatus?) -> Unit,
     onToggleRemindersFilter: () -> Unit,
@@ -68,12 +64,11 @@ fun DashboardScreen(
             HeroTelemetryCard(
                 uiState = uiState,
                 onSyncNow = onSyncNow,
-                onOpenPortalTab = onOpenPortalTab,
-                onSimulateStatusAlert = onSimulateStatusAlert
+                onOpenPortalTab = onOpenPortalTab
             )
         }
 
-        // 2. Live Feedback Banner
+        // 2. Live Sync Feedback Banner
         item {
             AnimatedVisibility(visible = !uiState.bannerFeedback.isNullOrBlank()) {
                 uiState.bannerFeedback?.let { msg ->
@@ -90,8 +85,8 @@ fun DashboardScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(
-                                imageVector = Icons.Default.NotificationsActive,
-                                contentDescription = "Alert status",
+                                imageVector = Icons.Default.Sync,
+                                contentDescription = "Sync status",
                                 tint = MaterialTheme.colorScheme.onPrimaryContainer,
                                 modifier = Modifier.size(20.dp)
                             )
@@ -109,7 +104,7 @@ fun DashboardScreen(
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Close,
-                                    contentDescription = "Dismiss notification banner",
+                                    contentDescription = "Dismiss banner",
                                     tint = MaterialTheme.colorScheme.onPrimaryContainer,
                                     modifier = Modifier.size(16.dp)
                                 )
@@ -153,24 +148,26 @@ fun DashboardScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Hidden Backend Statuses (${uiState.filteredJobs.size})",
+                    text = "Applied Jobs (${uiState.filteredJobs.size})",
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onBackground
                 )
                 Text(
-                    text = "api/v2/.../getAllAppliedJobsByCandidate",
+                    text = "usr-svc.sjp.gos.pk",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
 
-        // 6. Empty State or Job Cards
+        // 6. Empty State or Real SJP Job Cards
         if (uiState.filteredJobs.isEmpty()) {
             item {
                 EmptyJobsCard(
                     hasAnyJobs = uiState.allJobs.isNotEmpty(),
+                    hasActiveSession = uiState.sessionState.hasActiveSession,
                     onClearFilters = onClearFilters,
+                    onSyncNow = onSyncNow,
                     onOpenPortalTab = onOpenPortalTab
                 )
             }
@@ -183,6 +180,7 @@ fun DashboardScreen(
                     job = job,
                     isDark = isDark,
                     onCardClick = { onOpenJobDetail(job, 0) },
+                    onHistoryClick = { onOpenJobDetail(job, 1) },
                     onInspectJsonClick = { onOpenJobDetail(job, 2) },
                     onReminderClick = { onOpenJobDetail(job, 0) }
                 )
@@ -195,8 +193,7 @@ fun DashboardScreen(
 private fun HeroTelemetryCard(
     uiState: SjpUiState,
     onSyncNow: () -> Unit,
-    onOpenPortalTab: () -> Unit,
-    onSimulateStatusAlert: () -> Unit
+    onOpenPortalTab: () -> Unit
 ) {
     val session = uiState.sessionState
     val timeFormatter = remember { SimpleDateFormat("hh:mm a", Locale.US) }
@@ -235,7 +232,7 @@ private fun HeroTelemetryCard(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
                             .clip(RoundedCornerShape(50))
-                            .background(Color.Black.copy(alpha = 0.32f))
+                            .background(Color.Black.copy(alpha = 0.35f))
                             .padding(horizontal = 10.dp, vertical = 5.dp)
                     ) {
                         Box(
@@ -250,9 +247,9 @@ private fun HeroTelemetryCard(
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = if (session.hasActiveSession) {
-                                "SJP Session Persisted • Auto-Poll ${session.pollingIntervalMinutes}m"
+                                "SJP Session Active • Auto-Poll ${session.pollingIntervalMinutes}m"
                             } else {
-                                "Diagnostic Mode • Auto-Poll ${session.pollingIntervalMinutes}m"
+                                "Login Required • Auto-Poll ${session.pollingIntervalMinutes}m"
                             },
                             style = MaterialTheme.typography.labelMedium,
                             color = Color.White
@@ -269,13 +266,13 @@ private fun HeroTelemetryCard(
                 Spacer(modifier = Modifier.height(14.dp))
 
                 Text(
-                    text = "Sindh Job Portal Status Radar",
+                    text = "Sindh Job Portal Application Viewer",
                     style = MaterialTheme.typography.headlineMedium,
                     color = Color.White
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "Unmasks hidden statuses (Shortlisted, Temp Shortlisted, Offered, Temp Offered) from getAllAppliedJobsByCandidate.",
+                    text = "Fetches all pages from usr-svc.sjp.gos.pk/api/v2/candidates/application/getAllAppliedJobsByCandidate and notifies on status changes.",
                     style = MaterialTheme.typography.bodySmall,
                     color = Color.White.copy(alpha = 0.88f)
                 )
@@ -309,13 +306,13 @@ private fun HeroTelemetryCard(
                         } else {
                             Icon(
                                 imageVector = Icons.Default.Sync,
-                                contentDescription = "Sync API",
+                                contentDescription = "Sync SJP Applications",
                                 modifier = Modifier.size(18.dp)
                             )
                         }
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = if (uiState.isSyncing) "Polling…" else "Poll API",
+                            text = if (uiState.isSyncing) "Fetching SJP…" else "Fetch SJP Data",
                             style = MaterialTheme.typography.labelLarge
                         )
                     }
@@ -334,7 +331,7 @@ private fun HeroTelemetryCard(
                     ) {
                         Icon(
                             imageVector = Icons.Default.Language,
-                            contentDescription = "Open SJP Portal",
+                            contentDescription = "Open SJP Portal Login",
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
@@ -343,28 +340,6 @@ private fun HeroTelemetryCard(
                             style = MaterialTheme.typography.labelLarge
                         )
                     }
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                // Quick Notification & Diff Simulator button so user can test push notifications anytime
-                TextButton(
-                    onClick = onSimulateStatusAlert,
-                    colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFFFDE68A)),
-                    modifier = Modifier
-                        .align(Alignment.End)
-                        .testTag("simulate_status_alert_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.NotificationsActive,
-                        contentDescription = "Simulate status change push notification",
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "Test Status Change & Push Notification",
-                        style = MaterialTheme.typography.labelMedium
-                    )
                 }
             }
         }
@@ -395,21 +370,21 @@ private fun KpiSummaryRow(
         KpiStatTile(
             label = "Shortlisted",
             value = shortlisted.toString(),
-            accentColor = Color(0xFF2563EB),
+            accentColor = Color(0xFF1757B8),
             modifier = Modifier.weight(1f),
             onClick = { onStatusClick(ApplicationStatus.SHORTLISTED) }
         )
         KpiStatTile(
             label = "Offered",
             value = offered.toString(),
-            accentColor = Color(0xFF059669),
+            accentColor = Color(0xFF16803C),
             modifier = Modifier.weight(1f),
             onClick = { onStatusClick(ApplicationStatus.OFFERED) }
         )
         KpiStatTile(
             label = "Rejected",
             value = rejected.toString(),
-            accentColor = Color(0xFFDC2626),
+            accentColor = Color(0xFFC62828),
             modifier = Modifier.weight(1f),
             onClick = { onStatusClick(ApplicationStatus.REJECTED) }
         )
@@ -478,7 +453,7 @@ private fun SearchAndFiltersSection(
             onValueChange = onSearchQueryChange,
             placeholder = {
                 Text(
-                    text = "Search post title, department, BPS, or status…",
+                    text = "Search jobs, departments, application ID, or status…",
                     style = MaterialTheme.typography.bodyMedium
                 )
             },
@@ -541,7 +516,6 @@ private fun SearchAndFiltersSection(
                 ApplicationStatus.TEMP_SHORTLISTED,
                 ApplicationStatus.OFFERED,
                 ApplicationStatus.TEMP_OFFERED,
-                ApplicationStatus.UNDER_SCRUTINY,
                 ApplicationStatus.REJECTED
             )) {
                 FilterChip(
@@ -573,10 +547,14 @@ fun AppliedJobCard(
     job: AppliedJobEntity,
     isDark: Boolean,
     onCardClick: () -> Unit,
+    onHistoryClick: () -> Unit,
     onInspectJsonClick: () -> Unit,
     onReminderClick: () -> Unit
 ) {
     val (badgeBg, badgeFg) = job.statusEnum.badgeColors(isDark)
+    val statusHistoryEntries = remember(job.statusHistoryJson) {
+        SjpPayloadParser.parseBackendHistoryJson(job.statusHistoryJson)
+    }
 
     Card(
         modifier = Modifier
@@ -595,7 +573,7 @@ fun AppliedJobCard(
                 .fillMaxWidth()
                 .padding(16.dp)
         ) {
-            // Top Row: BPS Pill, App ID, and Unread Update Dot
+            // Top Row: Application ID & Current Status Badge
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -610,25 +588,20 @@ fun AppliedJobCard(
                         shape = RoundedCornerShape(8.dp)
                     ) {
                         Text(
-                            text = job.bpsScale,
+                            text = "ID: ${job.applicationId}",
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onPrimaryContainer,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                         )
                     }
-                    Text(
-                        text = job.applicationId,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
                     if (job.hasUnreadChange) {
                         Surface(
                             color = Color(0xFFFEF3C7),
                             shape = RoundedCornerShape(6.dp)
                         ) {
                             Text(
-                                text = "NEW UPDATE",
+                                text = "STATUS UPDATED",
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.Bold,
                                 color = Color(0xFFB45309),
@@ -638,16 +611,23 @@ fun AppliedJobCard(
                     }
                 }
 
-                Text(
-                    text = "Applied ${job.appliedDate}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Surface(
+                    color = badgeBg,
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text(
+                        text = job.rawStatusString,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = badgeFg,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Job Title & Department
+            // Job Title & Department (exact fields from j.jobTitle and j.Department.departmentName)
             Text(
                 text = job.jobTitle,
                 style = MaterialTheme.typography.titleLarge,
@@ -665,84 +645,76 @@ fun AppliedJobCard(
                 Text(
                     text = job.departmentName,
                     style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Frontend Masked vs Hidden Backend API Status Banner
+            // Structured Details Table matching the user's Firefox bookmarklet
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Column {
-                        Text(
-                            text = "PORTAL UI SHOWS",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = job.frontendMaskedStatus,
-                            style = MaterialTheme.typography.bodySmall,
-                            fontWeight = FontWeight.Medium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+                    BookmarkletFieldRow("Current status", job.rawStatusString, badgeFg, boldValue = true)
+                    BookmarkletFieldRow("Job offered", if (job.jobOffered) "YES" else "NO")
+                    BookmarkletFieldRow("Interview", job.jobInterviewStatus)
+                    BookmarkletFieldRow("Offer record", if (job.hasOfferRecord) "PRESENT" else "NONE")
+                    BookmarkletFieldRow("Rejection reason", job.reasonForRejected)
+                }
+            }
 
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                        contentDescription = "Revealed as",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(16.dp)
-                    )
-
-                    Column(horizontalAlignment = Alignment.End) {
-                        Text(
-                            text = "HIDDEN BACKEND API",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Surface(
-                            color = badgeBg,
-                            shape = RoundedCornerShape(8.dp)
+            // Inline preview of ApplicationStatuses History (from z.ApplicationStatuses)
+            if (statusHistoryEntries.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    text = "STATUS HISTORY (${statusHistoryEntries.size})",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    for (entry in statusHistoryEntries.take(3)) {
+                        val (_, entryFg) = ApplicationStatus.fromRawStatus(entry.status).badgeColors(isDark)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = job.statusEnum.displayLabel.uppercase(),
+                                text = entry.changedAt,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = entry.status,
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.Bold,
-                                color = badgeFg,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                color = entryFg
                             )
                         }
+                    }
+                    if (statusHistoryEntries.size > 3) {
+                        Text(
+                            text = "+ ${statusHistoryEntries.size - 3} more status history entries…",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.clickable(onClick = onHistoryClick)
+                        )
                     }
                 }
             }
 
-            // Hidden Scrutiny Remarks & Merit Score
-            if (job.backendRemarks.isNotBlank()) {
-                Spacer(modifier = Modifier.height(10.dp))
-                Text(
-                    text = job.backendRemarks,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
+            Spacer(modifier = Modifier.height(10.dp))
 
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // Footer Row: Merit Score, Interview Countdown / Notes, and Raw JSON Inspect Button
+            // Footer Row: Interview Countdown / Notes + History & Raw JSON Buttons
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -752,21 +724,6 @@ fun AppliedJobCard(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (job.meritScore.isNotBlank() && job.meritScore != "N/A") {
-                        Surface(
-                            color = MaterialTheme.colorScheme.secondaryContainer,
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text(
-                                text = "Score: ${job.meritScore}",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                            )
-                        }
-                    }
-
                     job.interviewTimestamp?.let { ts ->
                         val daysLeft = TimeUnit.MILLISECONDS.toDays(ts - System.currentTimeMillis())
                         val countdownLabel = when {
@@ -801,21 +758,39 @@ fun AppliedJobCard(
                     }
                 }
 
-                TextButton(
-                    onClick = onInspectJsonClick,
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                    modifier = Modifier.testTag("inspect_json_${job.applicationId}")
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.DataObject,
-                        contentDescription = "Inspect Raw JSON",
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = "Raw JSON",
-                        style = MaterialTheme.typography.labelLarge
-                    )
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(
+                        onClick = onHistoryClick,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.History,
+                            contentDescription = "Status History",
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "History (${statusHistoryEntries.size})",
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                    }
+
+                    TextButton(
+                        onClick = onInspectJsonClick,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                        modifier = Modifier.testTag("inspect_json_${job.applicationId}")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.DataObject,
+                            contentDescription = "Inspect Raw JSON",
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "JSON",
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                    }
                 }
             }
         }
@@ -823,9 +798,40 @@ fun AppliedJobCard(
 }
 
 @Composable
+private fun BookmarkletFieldRow(
+    label: String,
+    value: String,
+    valueColor: Color = MaterialTheme.colorScheme.onSurface,
+    boldValue: Boolean = false
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.Top
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(0.42f)
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = if (boldValue) FontWeight.Bold else FontWeight.Medium,
+            color = valueColor,
+            modifier = Modifier.weight(0.58f)
+        )
+    }
+}
+
+@Composable
 private fun EmptyJobsCard(
     hasAnyJobs: Boolean,
+    hasActiveSession: Boolean,
     onClearFilters: () -> Unit,
+    onSyncNow: () -> Unit,
     onOpenPortalTab: () -> Unit
 ) {
     Card(
@@ -841,31 +847,52 @@ private fun EmptyJobsCard(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Icon(
-                imageVector = Icons.Outlined.FindInPage,
+                imageVector = if (hasAnyJobs) Icons.Outlined.FilterAltOff else Icons.Outlined.AccountCircle,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(48.dp)
             )
             Spacer(modifier = Modifier.height(12.dp))
             Text(
-                text = if (hasAnyJobs) "No Applications Match Filters" else "No Applications Loaded Yet",
+                text = when {
+                    hasAnyJobs -> "No Applications Match Filters"
+                    hasActiveSession -> "Ready to Fetch Your SJP Applications"
+                    else -> "Log In to SJP Portal to Load Your Applications"
+                },
                 style = MaterialTheme.typography.titleLarge
             )
             Spacer(modifier = Modifier.height(6.dp))
             Text(
-                text = if (hasAnyJobs) {
-                    "Try clearing your active status or search filters to view all tracked SJP applications."
-                } else {
-                    "Connect your sjp.gos.pk account in the SJP Portal tab to fetch your live applications."
+                text = when {
+                    hasAnyJobs -> "Clear your active search or status filters to view your loaded SJP applications."
+                    hasActiveSession -> "Your SJP session is active. Tap 'Fetch SJP Data Now' or open the SJP Portal tab to load all pages from usr-svc.sjp.gos.pk."
+                    else -> "Sign in once on the SJP Portal tab. As soon as you log in, the app will automatically fetch all pages of your applied jobs from usr-svc.sjp.gos.pk."
                 },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(modifier = Modifier.height(16.dp))
-            Button(
-                onClick = if (hasAnyJobs) onClearFilters else onOpenPortalTab
-            ) {
-                Text(if (hasAnyJobs) "Reset All Filters" else "Open SJP Portal Login")
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (hasAnyJobs) {
+                    Button(onClick = onClearFilters) {
+                        Text("Reset Filters")
+                    }
+                } else {
+                    Button(onClick = onOpenPortalTab) {
+                        Icon(
+                            imageVector = Icons.Default.Language,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Open SJP Portal Login")
+                    }
+                    if (hasActiveSession) {
+                        OutlinedButton(onClick = onSyncNow) {
+                            Text("Fetch SJP Data Now")
+                        }
+                    }
+                }
             }
         }
     }

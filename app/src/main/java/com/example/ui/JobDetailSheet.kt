@@ -4,7 +4,6 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
-import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
@@ -24,7 +23,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.example.data.ApplicationStatus
 import com.example.data.AppliedJobEntity
+import com.example.data.SjpBackendStatusEntry
+import com.example.data.SjpPayloadParser
 import com.example.data.StatusHistoryEntity
 import org.json.JSONObject
 import java.text.SimpleDateFormat
@@ -47,6 +49,10 @@ fun JobDetailBottomSheet(
     val (badgeBg, badgeFg) = job.statusEnum.badgeColors(isDark)
     val context = LocalContext.current
 
+    val backendStatusEntries = remember(job.statusHistoryJson) {
+        SjpPayloadParser.parseBackendHistoryJson(job.statusHistoryJson)
+    }
+
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
@@ -65,26 +71,16 @@ fun JobDetailBottomSheet(
                 verticalAlignment = Alignment.Top
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                    Surface(
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        shape = RoundedCornerShape(6.dp)
                     ) {
-                        Surface(
-                            color = MaterialTheme.colorScheme.primaryContainer,
-                            shape = RoundedCornerShape(6.dp)
-                        ) {
-                            Text(
-                                text = job.bpsScale,
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
-                            )
-                        }
                         Text(
-                            text = "${job.applicationId} • Adv: ${job.advertisementNo}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            text = "Application ID: ${job.applicationId}",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
                         )
                     }
                     Spacer(modifier = Modifier.height(6.dp))
@@ -110,7 +106,7 @@ fun JobDetailBottomSheet(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Status Comparison Pill
+            // Status Pill
             Surface(
                 color = badgeBg,
                 shape = RoundedCornerShape(12.dp),
@@ -125,19 +121,19 @@ fun JobDetailBottomSheet(
                 ) {
                     Column {
                         Text(
-                            text = "UNMASKED BACKEND STATUS",
+                            text = "CURRENT STATUS",
                             style = MaterialTheme.typography.labelSmall,
                             color = badgeFg.copy(alpha = 0.8f)
                         )
                         Text(
-                            text = "${job.statusEnum.displayLabel} (raw: \"${job.rawStatusString}\")",
+                            text = job.rawStatusString,
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
                             color = badgeFg
                         )
                     }
                     Text(
-                        text = "Score: ${job.meritScore}",
+                        text = "Job Offered: ${if (job.jobOffered) "YES" else "NO"}",
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
                         color = badgeFg
@@ -147,7 +143,8 @@ fun JobDetailBottomSheet(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // 3 Tabs: Overview & Notes | Status History | Raw JSON Inspector
+            // 3 Tabs: Overview & Notes | Status History | Raw JSON
+            val historyCount = maxOf(backendStatusEntries.size, jobHistory.size)
             TabRow(
                 selectedTabIndex = selectedTab,
                 containerColor = MaterialTheme.colorScheme.surface
@@ -155,13 +152,13 @@ fun JobDetailBottomSheet(
                 Tab(
                     selected = selectedTab == 0,
                     onClick = { selectedTab = 0 },
-                    text = { Text("Overview & Notes") },
+                    text = { Text("Details & Notes") },
                     modifier = Modifier.testTag("detail_tab_overview")
                 )
                 Tab(
                     selected = selectedTab == 1,
                     onClick = { selectedTab = 1 },
-                    text = { Text("Audit Trail (${jobHistory.size})") },
+                    text = { Text("Status History ($historyCount)") },
                     modifier = Modifier.testTag("detail_tab_history")
                 )
                 Tab(
@@ -185,13 +182,17 @@ fun JobDetailBottomSheet(
                         onSaveNotesAndReminder(notesText, interviewTs)
                     }
                 )
-                1 -> DetailHistoryTab(jobHistory = jobHistory)
+                1 -> DetailHistoryTab(
+                    backendEntries = backendStatusEntries,
+                    localHistory = jobHistory,
+                    isDark = isDark
+                )
                 2 -> DetailRawJsonInspectorTab(
                     rawJson = job.rawJsonPayload,
                     onCopyJson = {
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                         clipboard.setPrimaryClip(ClipData.newPlainText("SJP Raw JSON", job.rawJsonPayload))
-                        Toast.makeText(context, "Copied raw backend JSON to clipboard", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "Copied raw JSON to clipboard", Toast.LENGTH_SHORT).show()
                     }
                 )
             }
@@ -223,24 +224,21 @@ private fun DetailOverviewAndNotesTab(
                     containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
                 )
             ) {
-                Column(modifier = Modifier.padding(14.dp)) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     Text(
-                        text = "Backend Scrutiny Remarks & Verification Notes",
+                        text = "SJP Backend Application Record",
                         style = MaterialTheme.typography.titleSmall,
                         color = MaterialTheme.colorScheme.primary
                     )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = job.backendRemarks.ifBlank { "No additional scrutiny remarks in payload." },
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "Portal Frontend Status: \"${job.frontendMaskedStatus}\" • Applied: ${job.appliedDate}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    DetailKeyValueRow("Application ID", job.applicationId)
+                    DetailKeyValueRow("Current status", job.rawStatusString)
+                    DetailKeyValueRow("Job offered", if (job.jobOffered) "YES" else "NO")
+                    DetailKeyValueRow("Interview", job.jobInterviewStatus)
+                    DetailKeyValueRow("Offer record", if (job.hasOfferRecord) "PRESENT" else "NONE")
+                    DetailKeyValueRow("Rejection reason", job.reasonForRejected)
                 }
             }
         }
@@ -268,7 +266,7 @@ private fun DetailOverviewAndNotesTab(
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "Interview / Written Test Countdown",
+                                text = "Interview / Test Countdown Reminder",
                                 style = MaterialTheme.typography.titleSmall
                             )
                         }
@@ -283,7 +281,7 @@ private fun DetailOverviewAndNotesTab(
                         text = if (interviewTimestamp != null) {
                             "Scheduled for: ${dateFormat.format(Date(interviewTimestamp))}"
                         } else {
-                            "Set a target date to display a live countdown badge on your dashboard:"
+                            "Set a target date to display a countdown badge on your dashboard:"
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -320,14 +318,14 @@ private fun DetailOverviewAndNotesTab(
         item {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = "Personal Preparation & Document Checklist Notes",
+                    text = "Personal Preparation Notes",
                     style = MaterialTheme.typography.titleSmall
                 )
                 OutlinedTextField(
                     value = notesText,
                     onValueChange = onNotesChange,
                     placeholder = {
-                        Text("Add interview preparation notes, required PRC/Domicile originals, or committee room details…")
+                        Text("Add interview preparation notes, document checklist, or remarks…")
                     },
                     minLines = 3,
                     maxLines = 6,
@@ -359,10 +357,37 @@ private fun DetailOverviewAndNotesTab(
 }
 
 @Composable
-private fun DetailHistoryTab(jobHistory: List<StatusHistoryEntity>) {
-    val fmt = remember { SimpleDateFormat("dd MMM yyyy • hh:mm:ss a", Locale.US) }
+private fun DetailKeyValueRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.Top
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(0.4f)
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(0.6f)
+        )
+    }
+}
 
-    if (jobHistory.isEmpty()) {
+@Composable
+private fun DetailHistoryTab(
+    backendEntries: List<SjpBackendStatusEntry>,
+    localHistory: List<StatusHistoryEntity>,
+    isDark: Boolean
+) {
+    val fmt = remember { SimpleDateFormat("MMM dd, yyyy, hh:mm a", Locale.US) }
+
+    if (backendEntries.isEmpty() && localHistory.isEmpty()) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -370,7 +395,7 @@ private fun DetailHistoryTab(jobHistory: List<StatusHistoryEntity>) {
             contentAlignment = Alignment.Center
         ) {
             Text(
-                text = "No status transitions recorded for this job yet.",
+                text = "No ApplicationStatuses history entries returned for this job.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -381,32 +406,69 @@ private fun DetailHistoryTab(jobHistory: List<StatusHistoryEntity>) {
             verticalArrangement = Arrangement.spacedBy(10.dp),
             contentPadding = PaddingValues(bottom = 28.dp)
         ) {
-            items(jobHistory, key = { it.id }) { item ->
-                Card(
-                    shape = RoundedCornerShape(14.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+            if (backendEntries.isNotEmpty()) {
+                item {
+                    Text(
+                        text = "SJP Backend ApplicationStatuses History",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary
                     )
-                ) {
-                    Column(modifier = Modifier.padding(14.dp)) {
-                        Text(
-                            text = fmt.format(Date(item.detectedAtTimestamp)),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                }
+                items(backendEntries) { entry ->
+                    val (bg, fg) = ApplicationStatus.fromRawStatus(entry.status).badgeColors(isDark)
+                    Card(
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
                         )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = "${item.previousStatusEnum.displayLabel}  →  ${item.newStatusEnum.displayLabel}",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        if (item.remarksSnapshot.isNotBlank()) {
-                            Spacer(modifier = Modifier.height(4.dp))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                             Text(
-                                text = item.remarksSnapshot,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurface
+                                text = entry.changedAt,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Surface(
+                                color = bg,
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text(
+                                    text = entry.status,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = fg,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            } else {
+                items(localHistory, key = { it.id }) { item ->
+                    Card(
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                        )
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Text(
+                                text = item.changedAtFormatted.ifBlank { fmt.format(Date(item.detectedAtTimestamp)) },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "${item.previousRawStatus}  →  ${item.newRawStatus}",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
                             )
                         }
                     }
@@ -465,7 +527,6 @@ private fun DetailRawJsonInspectorTab(
             }
         }
 
-        // Key-Value Inspector Rows
         items(parsedFields) { (key, value) ->
             Surface(
                 shape = RoundedCornerShape(10.dp),
@@ -483,24 +544,23 @@ private fun DetailRawJsonInspectorTab(
                         text = key,
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.weight(0.4f)
+                        modifier = Modifier.weight(0.38f)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         text = value,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.weight(0.6f)
+                        modifier = Modifier.weight(0.62f)
                     )
                 }
             }
         }
 
-        // Full Monospace Raw Payload Block
         item {
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = "Raw JSON Object (api/v2/candidates/application/getAllAppliedJobsByCandidate)",
+                text = "Full Raw Application JSON Object",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

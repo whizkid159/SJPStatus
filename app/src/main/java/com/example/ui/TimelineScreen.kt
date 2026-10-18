@@ -12,7 +12,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -33,10 +33,10 @@ fun TimelineScreen(
     historyList: List<StatusHistoryEntity>,
     unreadCount: Int,
     onMarkAllRead: () -> Unit,
-    onSimulateStatusTransition: () -> Unit
+    onSyncNow: () -> Unit
 ) {
     val isDark = isSystemInDarkTheme()
-    val dateFormatter = remember { SimpleDateFormat("dd MMM yyyy • hh:mm:ss a", Locale.US) }
+    val dateFormatter = remember { SimpleDateFormat("dd MMM yyyy • hh:mm a", Locale.US) }
 
     LazyColumn(
         modifier = Modifier
@@ -55,25 +55,17 @@ fun TimelineScreen(
                 elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Status Diff Audit Log",
-                                style = MaterialTheme.typography.headlineMedium,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                text = "Every detected backend transition from getAllAppliedJobsByCandidate is logged here with before & after snapshots.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
+                    Text(
+                        text = "SJP Status History & Live Diffs",
+                        style = MaterialTheme.typography.headlineMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = "Shows ApplicationStatuses history returned by usr-svc.sjp.gos.pk and live status transitions detected during background polling.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
 
                     Spacer(modifier = Modifier.height(12.dp))
 
@@ -82,20 +74,20 @@ fun TimelineScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Button(
-                            onClick = onSimulateStatusTransition,
+                            onClick = onSyncNow,
                             modifier = Modifier
                                 .weight(1f)
                                 .heightIn(min = 48.dp)
-                                .testTag("timeline_simulate_button"),
+                                .testTag("timeline_sync_button"),
                             shape = RoundedCornerShape(12.dp)
                         ) {
                             Icon(
-                                imageVector = Icons.Default.NotificationsActive,
+                                imageVector = Icons.Default.Sync,
                                 contentDescription = null,
                                 modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Trigger Status Diff")
+                            Text("Poll SJP Statuses Now")
                         }
 
                         if (unreadCount > 0) {
@@ -140,12 +132,12 @@ fun TimelineScreen(
                         )
                         Spacer(modifier = Modifier.height(10.dp))
                         Text(
-                            text = "No Status Transitions Yet",
+                            text = "No Status History Loaded Yet",
                             style = MaterialTheme.typography.titleLarge
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "Whenever an SJP backend poll detects a status change, the exact diff and timestamp will appear here.",
+                            text = "Once your applications are fetched from sjp.gos.pk, their full ApplicationStatuses history and future changes will appear here.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -184,14 +176,16 @@ fun TimelineScreen(
                                     )
                                 }
                                 Text(
-                                    text = "${item.bpsScale} • ${item.applicationId}",
+                                    text = "App ID: ${item.applicationId}",
                                     style = MaterialTheme.typography.labelMedium,
                                     color = MaterialTheme.colorScheme.primary
                                 )
                             }
 
                             Text(
-                                text = dateFormatter.format(Date(item.detectedAtTimestamp)),
+                                text = item.changedAtFormatted.ifBlank {
+                                    dateFormatter.format(Date(item.detectedAtTimestamp))
+                                },
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -213,7 +207,6 @@ fun TimelineScreen(
 
                         Spacer(modifier = Modifier.height(12.dp))
 
-                        // Before -> After Status Diff Row
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -228,7 +221,7 @@ fun TimelineScreen(
                                 shape = RoundedCornerShape(8.dp)
                             ) {
                                 Text(
-                                    text = item.previousStatusEnum.shortLabel,
+                                    text = item.previousRawStatus,
                                     style = MaterialTheme.typography.labelMedium,
                                     fontWeight = FontWeight.SemiBold,
                                     color = oldFg,
@@ -256,7 +249,7 @@ fun TimelineScreen(
                                 shape = RoundedCornerShape(8.dp)
                             ) {
                                 Text(
-                                    text = item.newStatusEnum.displayLabel.uppercase(),
+                                    text = item.newRawStatus,
                                     style = MaterialTheme.typography.labelMedium,
                                     fontWeight = FontWeight.Bold,
                                     color = newFg,

@@ -26,10 +26,99 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.data.SjpSessionState
+import kotlinx.coroutines.flow.SharedFlow
 
-private class SjpWebJsBridge(
+/**
+ * Shared JavaScript snippet modeled directly on the user's Firefox bookmarklet:
+ * Fetches https://usr-svc.sjp.gos.pk/api/v2/candidates/application/getAllAppliedJobsByCandidate?page=p&limit=10&keyword=
+ * across all pages (1..totalPages) with credentials: 'include' and any captured Authorization token,
+ * combines all applications into one JSON payload, and sends it to AndroidSjpBridge.
+ */
+fun buildSjpMultiPageFetchJs(savedBearerToken: String = ""): String {
+    val escapedToken = savedBearerToken.replace("'", "\\'")
+    return """
+    (async () => {
+      try {
+        var headers = { 'Accept': 'application/json' };
+        var foundToken = '${escapedToken}';
+        try {
+          var tokenKeys = ['token', 'access_token', 'auth_token', 'jwt', 'id_token', 'candidateToken'];
+          for (var i = 0; i < tokenKeys.length; i++) {
+            var v = window.localStorage.getItem(tokenKeys[i]) || window.sessionStorage.getItem(tokenKeys[i]);
+            if (v && v.length > 10 && v !== 'null' && v !== 'undefined') {
+              foundToken = v.replace(/^"|"$/g, '');
+              break;
+            }
+          }
+          if (!foundToken) {
+            for (var j = 0; j < window.localStorage.length; j++) {
+              var k = window.localStorage.key(j);
+              var raw = window.localStorage.getItem(k);
+              if (raw && raw.indexOf('eyJ') !== -1) {
+                var match = raw.match(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/);
+                if (match && match[0]) {
+                  foundToken = match[0];
+                  break;
+                }
+              }
+            }
+          }
+        } catch(e) {}
+
+        if (foundToken && foundToken.length > 10) {
+          AndroidSjpBridge.onAuthTokenFound(foundToken);
+          headers['Authorization'] = foundToken.indexOf('Bearer ') === 0 ? foundToken : ('Bearer ' + foundToken);
+        }
+
+        var page = 1;
+        var totalPages = 1;
+        var totalCount = 0;
+        var allApps = [];
+
+        while (page <= totalPages && page <= 50) {
+          var u = 'https://usr-svc.sjp.gos.pk/api/v2/candidates/application/getAllAppliedJobsByCandidate?page=' + page + '&limit=10&keyword=';
+          var r = await fetch(u, { credentials: 'include', headers: headers });
+          var t = await r.text();
+          if (!r.ok) {
+            if (page === 1) {
+              AndroidSjpBridge.onFetchError('HTTP ' + r.status + ': Please make sure you are logged into sjp.gos.pk');
+              return;
+            }
+            break;
+          }
+          var parsed = JSON.parse(t);
+          var d = parsed.data || {};
+          var apps = d.applications || [];
+          totalPages = (d.pagination && d.pagination.totalPages) ? Number(d.pagination.totalPages) : 1;
+          totalCount = (d.pagination && d.pagination.total) ? Number(d.pagination.total) : apps.length;
+          for (var idx = 0; idx < apps.length; idx++) {
+            allApps.push(apps[idx]);
+          }
+          page++;
+        }
+
+        var combinedPayload = JSON.stringify({
+          data: {
+            applications: allApps,
+            pagination: {
+              total: totalCount || allApps.length,
+              totalPages: totalPages,
+              page: 1
+            }
+          }
+        });
+        AndroidSjpBridge.onAppliedJobsPayload(combinedPayload);
+      } catch (err) {
+        AndroidSjpBridge.onFetchError('Could not fetch SJP data: ' + String(err));
+      }
+    })();
+    """.trimIndent()
+}
+
+class SjpWebJsBridge(
     private val onTokenCaptured: (String) -> Unit,
-    private val onPayloadCaptured: (String) -> Unit
+    private val onPayloadCaptured: (String) -> Unit,
+    private val onErrorCaptured: (String) -> Unit
 ) {
     @JavascriptInterface
     fun onAuthTokenFound(token: String?) {
@@ -44,17 +133,26 @@ private class SjpWebJsBridge(
             onPayloadCaptured(jsonString)
         }
     }
+
+    @JavascriptInterface
+    fun onFetchError(errorMsg: String?) {
+        if (!errorMsg.isNullOrBlank()) {
+            onErrorCaptured(errorMsg)
+        }
+    }
 }
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun PortalWebViewScreen(
     sessionState: SjpSessionState,
+    webViewFetchRequests: SharedFlow<Unit>,
     onSessionCaptured: (String?, String?) -> Unit,
     onPayloadCaptured: (String, String) -> Unit,
+    onFetchError: (String) -> Unit,
     onSaveConfig: (String, Int, Boolean, String) -> Unit,
-    onLoadDiagnosticSample: () -> Unit,
-    onClearSession: () -> Unit
+    onClearSession: () -> Unit,
+    onNavigateToDashboard: () -> Unit
 ) {
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
     var currentUrl by remember { mutableStateOf("https://sjp.gos.pk") }
@@ -62,51 +160,39 @@ fun PortalWebViewScreen(
     var showConfigDialog by remember { mutableStateOf(false) }
     var showImportJsonDialog by remember { mutableStateOf(false) }
 
-    // JavaScript snippet injected on every sjp.gos.pk page load to auto-capture
-    // localStorage/sessionStorage tokens AND hook fetch/XHR calls to getAllAppliedJobsByCandidate
-    val autoInterceptorJs = remember {
+    val multiPageFetchScript = remember(sessionState.bearerToken) {
+        buildSjpMultiPageFetchJs(sessionState.bearerToken)
+    }
+
+    // Listen for fetch triggers from ViewModel
+    LaunchedEffect(webViewFetchRequests, webViewRef) {
+        webViewFetchRequests.collect {
+            webViewRef?.evaluateJavascript(multiPageFetchScript, null)
+        }
+    }
+
+    // Injected hook that watches for any authenticated request to usr-svc.sjp.gos.pk
+    // and automatically triggers the multi-page getAllAppliedJobsByCandidate fetch upon login!
+    val autoInterceptorJs = remember(multiPageFetchScript) {
         """
         (function() {
           try {
-            var tokenKeys = ['token', 'access_token', 'auth_token', 'jwt', 'id_token', 'candidateToken', 'sjp_token'];
-            for (var i = 0; i < tokenKeys.length; i++) {
-              var k = tokenKeys[i];
-              var v = window.localStorage.getItem(k) || window.sessionStorage.getItem(k);
-              if (v && v.length > 10) {
-                AndroidSjpBridge.onAuthTokenFound(v);
-              }
-            }
             for (var j = 0; j < window.localStorage.length; j++) {
-              var keyName = window.localStorage.key(j);
-              var rawVal = window.localStorage.getItem(keyName);
-              if (rawVal && rawVal.indexOf('eyJ') !== -1) {
-                AndroidSjpBridge.onAuthTokenFound(rawVal);
+              var k = window.localStorage.key(j);
+              var raw = window.localStorage.getItem(k);
+              if (raw && raw.indexOf('eyJ') !== -1) {
+                var m = raw.match(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/);
+                if (m && m[0]) {
+                  AndroidSjpBridge.onAuthTokenFound(m[0]);
+                }
               }
             }
           } catch(e) {}
 
           if (!window.__sjpPulseHooked) {
             window.__sjpPulseHooked = true;
-            var origFetch = window.fetch;
-            if (origFetch) {
-              window.fetch = function() {
-                var args = arguments;
-                var urlStr = (typeof args[0] === 'string') ? args[0] : (args[0] && args[0].url ? args[0].url : '');
-                return origFetch.apply(this, args).then(function(response) {
-                  try {
-                    if (urlStr.indexOf('getAllAppliedJobsByCandidate') !== -1) {
-                      response.clone().text().then(function(txt) {
-                        AndroidSjpBridge.onAppliedJobsPayload(txt);
-                      });
-                    }
-                  } catch(e) {}
-                  return response;
-                });
-              };
-            }
 
             var origOpen = XMLHttpRequest.prototype.open;
-            var origSend = XMLHttpRequest.prototype.send;
             var origSetHeader = XMLHttpRequest.prototype.setRequestHeader;
             XMLHttpRequest.prototype.open = function(method, url) {
               this.__sjpUrl = url || '';
@@ -115,50 +201,32 @@ fun PortalWebViewScreen(
             XMLHttpRequest.prototype.setRequestHeader = function(header, value) {
               if (header && header.toLowerCase() === 'authorization' && value) {
                 AndroidSjpBridge.onAuthTokenFound(value);
+                if (!window.__sjpAutoFetchedOnAuth) {
+                  window.__sjpAutoFetchedOnAuth = true;
+                  setTimeout(function() {
+                    $multiPageFetchScript
+                  }, 800);
+                }
               }
               return origSetHeader.apply(this, arguments);
             };
-            XMLHttpRequest.prototype.send = function() {
-              this.addEventListener('load', function() {
+
+            var origFetch = window.fetch;
+            if (origFetch) {
+              window.fetch = function() {
+                var args = arguments;
                 try {
-                  if (this.__sjpUrl && this.__sjpUrl.indexOf('getAllAppliedJobsByCandidate') !== -1) {
-                    AndroidSjpBridge.onAppliedJobsPayload(this.responseText);
+                  var opts = args[1] || {};
+                  var hdrs = opts.headers || {};
+                  var authVal = hdrs['Authorization'] || hdrs['authorization'];
+                  if (authVal) {
+                    AndroidSjpBridge.onAuthTokenFound(authVal);
                   }
                 } catch(e) {}
-              });
-              return origSend.apply(this, arguments);
-            };
-          }
-        })();
-        """.trimIndent()
-    }
-
-    // Direct browser-context fetch script (identical to running JS inside Firefox console)
-    val browserFetchJs = remember(sessionState.bearerToken) {
-        """
-        (function() {
-          var headers = { 'Accept': 'application/json, text/plain, */*' };
-          var foundToken = '${sessionState.bearerToken}';
-          try {
-            var tokenKeys = ['token', 'access_token', 'auth_token', 'jwt', 'candidateToken'];
-            for (var i = 0; i < tokenKeys.length; i++) {
-              var v = window.localStorage.getItem(tokenKeys[i]) || window.sessionStorage.getItem(tokenKeys[i]);
-              if (v && v.length > 10) { foundToken = v.replace(/^"|"$/g, ''); break; }
+                return origFetch.apply(this, args);
+              };
             }
-          } catch(e) {}
-          if (foundToken && foundToken.length > 5) {
-            headers['Authorization'] = foundToken.indexOf('Bearer ') === 0 ? foundToken : ('Bearer ' + foundToken);
           }
-          fetch('/api/v2/candidates/application/getAllAppliedJobsByCandidate', {
-            method: 'GET',
-            credentials: 'include',
-            headers: headers
-          })
-          .then(function(r) { return r.text(); })
-          .then(function(txt) {
-            AndroidSjpBridge.onAppliedJobsPayload(txt);
-          })
-          .catch(function(err) {});
         })();
         """.trimIndent()
     }
@@ -168,7 +236,7 @@ fun PortalWebViewScreen(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
-        // Top Session Persistence & Browser Fetch Control Bar
+        // Top Control Bar
         Surface(
             color = MaterialTheme.colorScheme.surface,
             tonalElevation = 3.dp,
@@ -197,9 +265,9 @@ fun PortalWebViewScreen(
                         Column {
                             Text(
                                 text = if (sessionState.hasActiveSession) {
-                                    "SJP Session Active & Auto-Persisted"
+                                    "SJP Session Active • Auto-Saved"
                                 } else {
-                                    "Sign in below to persist SJP session"
+                                    "Log in to sjp.gos.pk below"
                                 },
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Bold
@@ -229,7 +297,7 @@ fun PortalWebViewScreen(
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Code,
-                                contentDescription = "Paste Firefox JSON Response"
+                                contentDescription = "Import JSON Payload"
                             )
                         }
                         IconButton(
@@ -246,44 +314,35 @@ fun PortalWebViewScreen(
 
                 Spacer(modifier = Modifier.height(8.dp))
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                Button(
+                    onClick = {
+                        val cm = CookieManager.getInstance()
+                        cm.flush()
+                        val combinedCookies = listOf(
+                            cm.getCookie("https://usr-svc.sjp.gos.pk").orEmpty(),
+                            cm.getCookie("https://sjp.gos.pk").orEmpty()
+                        ).filter { it.isNotBlank() }.joinToString("; ")
+                        if (combinedCookies.isNotBlank()) {
+                            onSessionCaptured(null, combinedCookies)
+                        }
+                        webViewRef?.evaluateJavascript(multiPageFetchScript, null)
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .testTag("run_browser_fetch_button"),
+                    shape = RoundedCornerShape(10.dp)
                 ) {
-                    Button(
-                        onClick = {
-                            webViewRef?.evaluateJavascript(browserFetchJs, null)
-                        },
-                        modifier = Modifier
-                            .weight(1f)
-                            .heightIn(min = 48.dp)
-                            .testTag("run_browser_fetch_button"),
-                        shape = RoundedCornerShape(10.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Terminal,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "Run JS API Fetch Now",
-                            style = MaterialTheme.typography.labelLarge
-                        )
-                    }
-
-                    OutlinedButton(
-                        onClick = onLoadDiagnosticSample,
-                        modifier = Modifier
-                            .heightIn(min = 48.dp)
-                            .testTag("load_sample_data_button"),
-                        shape = RoundedCornerShape(10.dp)
-                    ) {
-                        Text(
-                            text = "Load Demo JSON",
-                            style = MaterialTheme.typography.labelLarge
-                        )
-                    }
+                    Icon(
+                        imageVector = Icons.Default.Sync,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Fetch My SJP Applications Now (All Pages)",
+                        style = MaterialTheme.typography.labelLarge
+                    )
                 }
 
                 if (isLoadingPage) {
@@ -293,7 +352,7 @@ fun PortalWebViewScreen(
             }
         }
 
-        // Embedded SJP Portal WebView with automatic CookieManager persistence
+        // Embedded SJP Portal WebView
         AndroidView(
             modifier = Modifier
                 .fillMaxWidth()
@@ -317,11 +376,18 @@ fun PortalWebViewScreen(
                     addJavascriptInterface(
                         SjpWebJsBridge(
                             onTokenCaptured = { token ->
-                                val cookies = cookieManager.getCookie("https://sjp.gos.pk")
-                                onSessionCaptured(token, cookies)
+                                val combinedCookies = listOf(
+                                    cookieManager.getCookie("https://usr-svc.sjp.gos.pk").orEmpty(),
+                                    cookieManager.getCookie("https://sjp.gos.pk").orEmpty()
+                                ).filter { it.isNotBlank() }.joinToString("; ")
+                                onSessionCaptured(token, combinedCookies)
                             },
                             onPayloadCaptured = { json ->
-                                onPayloadCaptured(json, "Browser JS Fetch")
+                                onPayloadCaptured(json, "SJP Live Fetch")
+                                onNavigateToDashboard()
+                            },
+                            onErrorCaptured = { err ->
+                                onFetchError(err)
                             }
                         ),
                         "AndroidSjpBridge"
@@ -340,16 +406,20 @@ fun PortalWebViewScreen(
                             isLoadingPage = false
                             if (!url.isNullOrBlank()) currentUrl = url
 
-                            // Flush cookies to disk so session survives app and device restarts
-                            val cookieManagerInstance = CookieManager.getInstance()
-                            cookieManagerInstance.flush()
-                            val cookies = cookieManagerInstance.getCookie("https://sjp.gos.pk")
-                            if (!cookies.isNullOrBlank()) {
-                                onSessionCaptured(null, cookies)
+                            val cm = CookieManager.getInstance()
+                            cm.flush()
+                            val combinedCookies = listOf(
+                                cm.getCookie("https://usr-svc.sjp.gos.pk").orEmpty(),
+                                cm.getCookie("https://sjp.gos.pk").orEmpty()
+                            ).filter { it.isNotBlank() }.joinToString("; ")
+
+                            if (combinedCookies.isNotBlank()) {
+                                onSessionCaptured(null, combinedCookies)
                             }
 
-                            // Inject our XHR/Fetch/localStorage interceptor script
                             view?.evaluateJavascript(autoInterceptorJs, null)
+                            // Automatically attempt to fetch applications after page load if logged in
+                            view?.evaluateJavascript(multiPageFetchScript, null)
                         }
                     }
 
@@ -366,6 +436,7 @@ fun PortalWebViewScreen(
             onImportJson = { rawJson ->
                 onPayloadCaptured(rawJson, "Manual JSON Import")
                 showImportJsonDialog = false
+                onNavigateToDashboard()
             }
         )
     }
@@ -397,17 +468,17 @@ private fun ManualJsonImportDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Import Firefox / SJP JSON Payload") },
+        title = { Text("Import SJP JSON Response") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = "Paste the raw JSON output from api/v2/candidates/application/getAllAppliedJobsByCandidate to parse hidden statuses and trigger diff alerts:",
+                    text = "Paste a raw JSON response from usr-svc.sjp.gos.pk/api/v2/candidates/application/getAllAppliedJobsByCandidate:",
                     style = MaterialTheme.typography.bodySmall
                 )
                 OutlinedTextField(
                     value = jsonInput,
                     onValueChange = { jsonInput = it },
-                    placeholder = { Text("{\"data\": [{\"applicationId\": ...}]}") },
+                    placeholder = { Text("{\"data\": {\"applications\": [...]}}") },
                     minLines = 6,
                     maxLines = 10,
                     modifier = Modifier
@@ -421,7 +492,7 @@ private fun ManualJsonImportDialog(
                 onClick = { if (jsonInput.isNotBlank()) onImportJson(jsonInput) },
                 enabled = jsonInput.isNotBlank()
             ) {
-                Text("Parse & Track JSON")
+                Text("Parse & Load")
             }
         },
         dismissButton = {
@@ -507,7 +578,7 @@ private fun SessionAndPollingConfigDialog(
                     onClick = onClearSession,
                     colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
                 ) {
-                    Text("Clear Saved Portal Session & Cookies")
+                    Text("Clear Saved Portal Session & Cache")
                 }
             }
         },
