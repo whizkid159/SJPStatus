@@ -30,17 +30,29 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Setup Android SDK & Accept All SDK Licenses
-        uses: android-actions/setup-android@v3
-
-      - name: Accept Android SDK Licenses for Auto-Provisioning (API 36.1)
+      - name: Configure Android SDK & Write License Hashes
         run: |
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          SDK_DIR="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          mkdir -p "${SDK_DIR}/licenses"
+          printf "\n8933bad161af4178b1185d1a37fbf41ea5269c55\nd56f5187479451eabf01fb78af6dfcb131a6481e\n24333f8a63b6825ea9c5514f83c2829b004d1fee\n" > "${SDK_DIR}/licenses/android-sdk-license"
+          printf "\n84831b9409646a918e30573bab4c9c91346d8abd\n504667f4c0de7af1a06de9f4b1727b84351f2910\n" > "${SDK_DIR}/licenses/android-sdk-preview-license"
+          printf "\n859f317696f67ef3d7f30a50a5560e7834b43903\n" > "${SDK_DIR}/licenses/android-sdk-arm-dbt-license"
+          printf "\n601085b94cd77f0b54ff86406957099ebe79c4d6\n" > "${SDK_DIR}/licenses/android-googletv-license"
+          printf "\nceff83576aac4f7f37cb98fe189e9fb3c49d3b81\n" > "${SDK_DIR}/licenses/android-googlexr-license"
+          printf "\n33b6a2b64607f11b759f320ef9dff4ae5c47d97a\n" > "${SDK_DIR}/licenses/google-gdk-license"
+          printf "\ne9acab5b5fbb560a72cfaecce8946896ff6aab9d\n" > "${SDK_DIR}/licenses/mips-android-sysimage-license"
+          echo "ANDROID_HOME=${SDK_DIR}" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=${SDK_DIR}" >> "$GITHUB_ENV"
+          echo "Configured Android SDK at ${SDK_DIR}"
 
-      - name: Setup Gradle 9.3.1
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '9.3.1'
+      - name: Install Gradle 9.3.1
+        run: |
+          GRADLE_VER="9.3.1"
+          curl -fsSL "https://services.gradle.org/distributions/gradle-${GRADLE_VER}-bin.zip" -o /tmp/gradle.zip
+          sudo mkdir -p /opt/gradle-dist
+          sudo unzip -q -o /tmp/gradle.zip -d /opt/gradle-dist
+          echo "/opt/gradle-dist/gradle-${GRADLE_VER}/bin" >> "$GITHUB_PATH"
+          /opt/gradle-dist/gradle-${GRADLE_VER}/bin/gradle --version
 
       - name: Prepare Keystore & Environment Config
         run: |
@@ -91,50 +103,51 @@ jobs:
 
           NEXT_MINOR=$((LATEST_MINOR + 1))
           TAG_NAME="beta-0.${NEXT_MINOR}"
+          BETA_LABEL="beta 0.${NEXT_MINOR}"
           RELEASE_TITLE="beta 0.${NEXT_MINOR} — SJP Pulse (App APK + Source Code)"
           BUILD_DATE=$(date -u +"%Y-%m-%d %H:%M UTC")
-          SHORT_SHA="${GITHUB_SHA::7}"
+          SHORT_SHA="${GITHUB_SHA:0:7}"
 
-          # Collect recent commit messages for the release description
           if [ "$LATEST_MINOR" -gt 0 ]; then
             PREV_TAG="beta-0.${LATEST_MINOR}"
-            COMMIT_LOG=$(git log "${PREV_TAG}..HEAD" --pretty=format:"- %s (\`%h\`)" || git log -n 10 --pretty=format:"- %s (\`%h\`)")
+            COMMIT_LOG=$(git log "${PREV_TAG}..HEAD" --pretty=format:"- %s (%h)" 2>/dev/null || git log -n 10 --pretty=format:"- %s (%h)")
           else
-            COMMIT_LOG=$(git log -n 10 --pretty=format:"- %s (\`%h\`)" || echo "- Initial beta release (${SHORT_SHA})")
+            COMMIT_LOG=$(git log -n 10 --pretty=format:"- %s (%h)" 2>/dev/null || echo "- Initial beta release (${SHORT_SHA})")
           fi
           if [ -z "$COMMIT_LOG" ]; then
-            COMMIT_LOG="- Automated build from commit \`${SHORT_SHA}\`"
+            COMMIT_LOG="- Automated build from commit ${SHORT_SHA}"
           fi
 
-          cat <<EOF > release-notes.md
-          # SJP Pulse — Release \`beta 0.${NEXT_MINOR}\`
-
-          Automated Android application and source code release triggered from branch \`${GITHUB_REF_NAME}\` at commit \`${SHORT_SHA}\` on **${BUILD_DATE}**.
-
-          ## Release Metadata
-          - **Tag**: \`${TAG_NAME}\` (\`beta 0.${NEXT_MINOR}\`)
-          - **Title**: ${RELEASE_TITLE}
-          - **Package ID**: \`com.aistudio.sjppulse.vktrqm\`
-          - **Commit**: \`${GITHUB_SHA}\`
-
-          ## Included Release Files (App & Source Code)
-          - **Android Application APK**: \`SJP-Pulse-${TAG_NAME}.apk\` *(ready to install on Android 7.0+ devices)*
-          - **Full Source Code (ZIP)**: \`SJP-Pulse-${TAG_NAME}-source.zip\`
-          - **Full Source Code (TAR.GZ)**: \`SJP-Pulse-${TAG_NAME}-source.tar.gz\`
-
-          ## What's Included in SJP Pulse
-          - **Hidden Backend Status Radar**: Polls \`sjp.gos.pk/api/v2/candidates/application/getAllAppliedJobsByCandidate\` to reveal unmasked statuses (\`Shortlisted\`, \`Temporary Shortlisted\`, \`Offered\`, \`Temporary Offered\`, \`Under Scrutiny\`, \`Rejected\`).
-          - **Persistent SJP WebView Login**: Captures and persists session cookies and Bearer tokens across restarts.
-          - **30-Minute Background Polling & Push Alerts**: Sends high-priority notifications whenever a status or scrutiny remark changes.
-          - **Status Diff Timeline, Raw JSON Inspector & Custom Report Exporter**: Inspect unmasked backend JSON fields, track historical transitions, and export CSV or Executive Text reports.
-
-          ## Changes in This Build
-          ${COMMIT_LOG}
-          EOF
+          {
+            echo "# SJP Pulse — Release ${BETA_LABEL}"
+            echo ""
+            echo "Automated Android application and source code release triggered from branch \`${GITHUB_REF_NAME}\` at commit \`${SHORT_SHA}\` on **${BUILD_DATE}**."
+            echo ""
+            echo "## Release Metadata"
+            echo "- **Tag**: \`${TAG_NAME}\` (\`${BETA_LABEL}\`)"
+            echo "- **Title**: ${RELEASE_TITLE}"
+            echo "- **Application ID**: \`com.aistudio.sjppulse.vktrqm\`"
+            echo "- **Commit SHA**: \`${GITHUB_SHA}\`"
+            echo ""
+            echo "## Attached Deliverables (Application & Source Code)"
+            echo "- **Android App APK**: \`SJP-Pulse-${TAG_NAME}.apk\` *(Installable on Android 7.0+ devices)*"
+            echo "- **Source Code (ZIP)**: \`SJP-Pulse-${TAG_NAME}-source.zip\`"
+            echo "- **Source Code (TAR.GZ)**: \`SJP-Pulse-${TAG_NAME}-source.tar.gz\`"
+            echo ""
+            echo "## Key Features"
+            echo "- **Hidden Backend Status Radar**: Polls \`sjp.gos.pk/api/v2/candidates/application/getAllAppliedJobsByCandidate\` to unmask statuses (\`Shortlisted\`, \`Temporary Shortlisted\`, \`Offered\`, \`Temporary Offered\`, \`Under Scrutiny\`, \`Rejected\`)."
+            echo "- **Persistent SJP WebView Login**: Automatically captures and persists session cookies and Bearer tokens."
+            echo "- **30-Minute Background Polling & Push Alerts**: Sends high-priority notifications whenever a status or scrutiny remark changes."
+            echo "- **Status Diff Timeline, Raw JSON Inspector & Custom Report Exporter**: Inspect unmasked backend JSON fields, view status audit logs, and export CSV or Executive Text reports."
+            echo ""
+            echo "## Commits in This Release"
+            echo "${COMMIT_LOG}"
+          } > release-notes.md
 
           echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
           echo "release_title=${RELEASE_TITLE}" >> "$GITHUB_OUTPUT"
-          echo "beta_label=beta 0.${NEXT_MINOR}" >> "$GITHUB_OUTPUT"
+          echo "beta_label=${BETA_LABEL}" >> "$GITHUB_OUTPUT"
+          cat release-notes.md
 
       - name: Compile Android Application APK
         run: gradle :app:assembleDebug --no-daemon --stacktrace
@@ -153,7 +166,6 @@ jobs:
         run: |
           mkdir -p release-assets
 
-          # 1. Copy compiled Android APK
           APK_PATH=$(find app/build/outputs/apk/debug -name "*.apk" | head -n 1)
           if [ -z "$APK_PATH" ]; then
             echo "Error: Debug APK was not found in app/build/outputs/apk/debug"
@@ -168,35 +180,28 @@ jobs:
             fi
           fi
 
-          # 2. Package complete Source Code in both ZIP and TAR.GZ formats
           git archive --format=zip --prefix="SJP-Pulse-${TAG_NAME}/" --output="release-assets/SJP-Pulse-${TAG_NAME}-source.zip" HEAD
           git archive --format=tar.gz --prefix="SJP-Pulse-${TAG_NAME}/" --output="release-assets/SJP-Pulse-${TAG_NAME}-source.tar.gz" HEAD
 
           ls -lh release-assets/
 
-      - name: Create & Push Annotated Git Tag with Description
+      - name: Create Annotated Git Tag & Publish GitHub Release
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ steps.meta.outputs.tag_name }}
-          BETA_LABEL: ${{ steps.meta.outputs.beta_label }}
+          RELEASE_TITLE: ${{ steps.meta.outputs.release_title }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "${TAG_NAME}" -F release-notes.md -f
           git push origin "${TAG_NAME}" --force
 
-      - name: Publish GitHub Release with App APK, Source Code, Title & Description
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.meta.outputs.tag_name }}
-          name: ${{ steps.meta.outputs.release_title }}
-          body_path: release-notes.md
-          prerelease: true
-          draft: false
-          make_latest: true
-          files: |
-            release-assets/SJP-Pulse-${{ steps.meta.outputs.tag_name }}.apk
-            release-assets/SJP-Pulse-${{ steps.meta.outputs.tag_name }}-source.zip
-            release-assets/SJP-Pulse-${{ steps.meta.outputs.tag_name }}-source.tar.gz
-            release-assets/SJP-Pulse-${{ steps.meta.outputs.tag_name }}-signed-release.apk
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          if gh release view "${TAG_NAME}" >/dev/null 2>&1; then
+            gh release delete "${TAG_NAME}" --yes || true
+          fi
+
+          gh release create "${TAG_NAME}" \
+            release-assets/* \
+            --title "${RELEASE_TITLE}" \
+            --notes-file release-notes.md \
+            --prerelease
