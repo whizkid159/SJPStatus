@@ -1,4 +1,4 @@
-name: Build & Auto-Release Beta APK
+name: Build & Auto-Release Beta (APK + Source Code)
 
 on:
   push:
@@ -12,33 +12,40 @@ permissions:
 
 jobs:
   build-and-release-beta:
-    name: Build APK & Publish Beta Release
+    name: Build SJP Pulse APK & Publish Beta Release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
-      - name: Checkout Private Repository (Full History & Tags)
+      - name: Checkout Repository with Full History & Tags
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set up JDK 17
+      - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '21'
 
-      - name: Setup Android SDK
+      - name: Setup Android SDK & Accept All SDK Licenses
         uses: android-actions/setup-android@v3
 
-      - name: Setup Gradle
+      - name: Accept Android SDK Licenses for Auto-Provisioning (API 36.1)
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+
+      - name: Setup Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.11.1'
+          gradle-version: '9.3.1'
 
-      - name: Ensure debug.keystore & .env exist for CI Build
+      - name: Prepare Keystore & Environment Config
         run: |
           if [ ! -f "debug.keystore" ]; then
-            keytool -genkey -v \
+            keytool -genkeypair -v \
               -keystore debug.keystore \
               -storepass android \
               -alias androiddebugkey \
@@ -48,11 +55,15 @@ jobs:
               -validity 10000 \
               -dname "CN=Android Debug,O=Android,C=US"
           fi
-          if [ ! -f ".env" ] && [ -f ".env.example" ]; then
-            cp .env.example .env
+          if [ ! -f ".env" ]; then
+            if [ -f ".env.example" ]; then
+              cp .env.example .env
+            else
+              touch .env
+            fi
           fi
 
-      - name: Restore Release Keystore (Optional if Secrets Configured)
+      - name: Restore Optional Release Keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
         run: |
@@ -63,58 +74,129 @@ jobs:
             echo "HAS_RELEASE_KEYSTORE=false" >> "$GITHUB_ENV"
           fi
 
-      - name: Calculate Next Sequential Beta Tag (beta-0.1, beta-0.2, ...)
-        id: next_version
+      - name: Determine Next Sequential Beta Tag, Title & Description
+        id: meta
         run: |
-          git fetch --tags --force
-          LATEST_MINOR=$(git tag -l "beta-0.*" | sed -E 's/^beta-0\.([0-9]+)$/\1/' | grep -E '^[0-9]+$' | sort -n | tail -n 1)
-          if [ -z "$LATEST_MINOR" ]; then
-            NEXT_MINOR=1
-          else
-            NEXT_MINOR=$((LATEST_MINOR + 1))
-          fi
+          git fetch --tags --force || true
+          EXISTING_TAGS=$(git tag -l "beta-0.*" || true)
+          LATEST_MINOR=0
+          for t in $EXISTING_TAGS; do
+            num="${t#beta-0.}"
+            if [[ "$num" =~ ^[0-9]+$ ]]; then
+              if (( num > LATEST_MINOR )); then
+                LATEST_MINOR=$num
+              fi
+            fi
+          done
+
+          NEXT_MINOR=$((LATEST_MINOR + 1))
           TAG_NAME="beta-0.${NEXT_MINOR}"
-          RELEASE_TITLE="beta 0.${NEXT_MINOR}"
+          RELEASE_TITLE="beta 0.${NEXT_MINOR} — SJP Pulse (App APK + Source Code)"
+          BUILD_DATE=$(date -u +"%Y-%m-%d %H:%M UTC")
+          SHORT_SHA="${GITHUB_SHA::7}"
+
+          # Collect recent commit messages for the release description
+          if [ "$LATEST_MINOR" -gt 0 ]; then
+            PREV_TAG="beta-0.${LATEST_MINOR}"
+            COMMIT_LOG=$(git log "${PREV_TAG}..HEAD" --pretty=format:"- %s (\`%h\`)" || git log -n 10 --pretty=format:"- %s (\`%h\`)")
+          else
+            COMMIT_LOG=$(git log -n 10 --pretty=format:"- %s (\`%h\`)" || echo "- Initial beta release (${SHORT_SHA})")
+          fi
+          if [ -z "$COMMIT_LOG" ]; then
+            COMMIT_LOG="- Automated build from commit \`${SHORT_SHA}\`"
+          fi
+
+          cat <<EOF > release-notes.md
+          # SJP Pulse — Release \`beta 0.${NEXT_MINOR}\`
+
+          Automated Android application and source code release triggered from branch \`${GITHUB_REF_NAME}\` at commit \`${SHORT_SHA}\` on **${BUILD_DATE}**.
+
+          ## Release Metadata
+          - **Tag**: \`${TAG_NAME}\` (\`beta 0.${NEXT_MINOR}\`)
+          - **Title**: ${RELEASE_TITLE}
+          - **Package ID**: \`com.aistudio.sjppulse.vktrqm\`
+          - **Commit**: \`${GITHUB_SHA}\`
+
+          ## Included Release Files (App & Source Code)
+          - **Android Application APK**: \`SJP-Pulse-${TAG_NAME}.apk\` *(ready to install on Android 7.0+ devices)*
+          - **Full Source Code (ZIP)**: \`SJP-Pulse-${TAG_NAME}-source.zip\`
+          - **Full Source Code (TAR.GZ)**: \`SJP-Pulse-${TAG_NAME}-source.tar.gz\`
+
+          ## What's Included in SJP Pulse
+          - **Hidden Backend Status Radar**: Polls \`sjp.gos.pk/api/v2/candidates/application/getAllAppliedJobsByCandidate\` to reveal unmasked statuses (\`Shortlisted\`, \`Temporary Shortlisted\`, \`Offered\`, \`Temporary Offered\`, \`Under Scrutiny\`, \`Rejected\`).
+          - **Persistent SJP WebView Login**: Captures and persists session cookies and Bearer tokens across restarts.
+          - **30-Minute Background Polling & Push Alerts**: Sends high-priority notifications whenever a status or scrutiny remark changes.
+          - **Status Diff Timeline, Raw JSON Inspector & Custom Report Exporter**: Inspect unmasked backend JSON fields, track historical transitions, and export CSV or Executive Text reports.
+
+          ## Changes in This Build
+          ${COMMIT_LOG}
+          EOF
+
           echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
           echo "release_title=${RELEASE_TITLE}" >> "$GITHUB_OUTPUT"
-          echo "next_minor=${NEXT_MINOR}" >> "$GITHUB_OUTPUT"
-          echo "Computed next release: ${RELEASE_TITLE} (tag: ${TAG_NAME})"
+          echo "beta_label=beta 0.${NEXT_MINOR}" >> "$GITHUB_OUTPUT"
 
-      - name: Build Debug APK
-        run: gradle :app:assembleDebug --no-daemon
+      - name: Compile Android Application APK
+        run: gradle :app:assembleDebug --no-daemon --stacktrace
 
-      - name: Build Signed Release APK (When Release Keystore Secrets Exist)
+      - name: Compile Signed Release APK (If Release Keystore Configured)
         if: env.HAS_RELEASE_KEYSTORE == 'true'
         env:
           KEYSTORE_PATH: ${{ github.workspace }}/my-upload-key.jks
           STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: gradle :app:assembleRelease --no-daemon
+        run: gradle :app:assembleRelease --no-daemon --stacktrace
 
-      - name: Prepare Release Artifacts (APK & Source Code Archive)
+      - name: Package Application APK & Source Code Archives
         env:
-          TAG_NAME: ${{ steps.next_version.outputs.tag_name }}
+          TAG_NAME: ${{ steps.meta.outputs.tag_name }}
         run: |
           mkdir -p release-assets
-          cp app/build/outputs/apk/debug/app-debug.apk "release-assets/SJP-Pulse-${TAG_NAME}-debug.apk"
-          if [ -f "app/build/outputs/apk/release/app-release.apk" ]; then
-            cp app/build/outputs/apk/release/app-release.apk "release-assets/SJP-Pulse-${TAG_NAME}-release.apk"
-          fi
-          git archive --format=zip --output="release-assets/SJP-Pulse-${TAG_NAME}-source.zip" HEAD
 
-      - name: Create Git Tag & Publish GitHub Release
+          # 1. Copy compiled Android APK
+          APK_PATH=$(find app/build/outputs/apk/debug -name "*.apk" | head -n 1)
+          if [ -z "$APK_PATH" ]; then
+            echo "Error: Debug APK was not found in app/build/outputs/apk/debug"
+            exit 1
+          fi
+          cp "$APK_PATH" "release-assets/SJP-Pulse-${TAG_NAME}.apk"
+
+          if [ -d "app/build/outputs/apk/release" ]; then
+            REL_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1 || true)
+            if [ -n "$REL_APK" ]; then
+              cp "$REL_APK" "release-assets/SJP-Pulse-${TAG_NAME}-signed-release.apk"
+            fi
+          fi
+
+          # 2. Package complete Source Code in both ZIP and TAR.GZ formats
+          git archive --format=zip --prefix="SJP-Pulse-${TAG_NAME}/" --output="release-assets/SJP-Pulse-${TAG_NAME}-source.zip" HEAD
+          git archive --format=tar.gz --prefix="SJP-Pulse-${TAG_NAME}/" --output="release-assets/SJP-Pulse-${TAG_NAME}-source.tar.gz" HEAD
+
+          ls -lh release-assets/
+
+      - name: Create & Push Annotated Git Tag with Description
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_NAME: ${{ steps.next_version.outputs.tag_name }}
-          RELEASE_TITLE: ${{ steps.next_version.outputs.release_title }}
+          TAG_NAME: ${{ steps.meta.outputs.tag_name }}
+          BETA_LABEL: ${{ steps.meta.outputs.beta_label }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "${TAG_NAME}" -m "Automated release ${RELEASE_TITLE}"
-          git push origin "${TAG_NAME}"
+          git tag -a "${TAG_NAME}" -F release-notes.md -f
+          git push origin "${TAG_NAME}" --force
 
-          gh release create "${TAG_NAME}" \
-            release-assets/* \
-            --title "${RELEASE_TITLE}" \
-            --notes "Automated build and source release **${RELEASE_TITLE}** (\`${TAG_NAME}\`) generated from commit \`${GITHUB_SHA::7}\`." \
-            --prerelease
+      - name: Publish GitHub Release with App APK, Source Code, Title & Description
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag_name }}
+          name: ${{ steps.meta.outputs.release_title }}
+          body_path: release-notes.md
+          prerelease: true
+          draft: false
+          make_latest: true
+          files: |
+            release-assets/SJP-Pulse-${{ steps.meta.outputs.tag_name }}.apk
+            release-assets/SJP-Pulse-${{ steps.meta.outputs.tag_name }}-source.zip
+            release-assets/SJP-Pulse-${{ steps.meta.outputs.tag_name }}-source.tar.gz
+            release-assets/SJP-Pulse-${{ steps.meta.outputs.tag_name }}-signed-release.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,72 +1,77 @@
 # Git Workflow & Automated Beta Release Guide (`beta 0.1`, `beta 0.2`, …)
 
-This document explains how **SJP Pulse** automatically compiles the Android APK, packages the source code, increments the beta tag (`beta-0.1`, `beta-0.2`, `beta-0.3`, …), and publishes a new release whenever you push to your private Git repository.
+This document explains how **SJP Pulse** automatically builds the Android application APK, archives the complete source code, creates an annotated Git tag (`beta-0.1`, `beta-0.2`, `beta-0.3`, …), and publishes a full GitHub Release with **Tag**, **Title**, **Description**, **App APK**, and **Source Code** on every push to your private repository.
 
 ---
 
-## 1. Included Workflow File
+## 1. Why the Previous Run Failed & How It Is Fixed
 
-The automated CI/CD pipeline is pre-configured at:
-
-- **`.github/workflows/release-beta.yml`**
-
-Whenever commits are pushed to the `main` or `master` branch (or triggered manually via the **Actions** tab), the workflow performs the following steps:
-
-1. **Full Tag History Fetch**: Clones the private repository with `fetch-depth: 0` and inspects existing `beta-0.*` tags.
-2. **Automatic Version Increment**:
-   - If no `beta-0.*` tag exists yet, it assigns tag **`beta-0.1`** and release title **`beta 0.1`**.
-   - On subsequent pushes, it automatically increments the sequence (`beta 0.2` / `beta-0.2`, `beta 0.3` / `beta-0.3`, and so on).
-3. **Environment & Keystore Provisioning**:
-   - Automatically generates `debug.keystore` if not present in the CI runner and copies `.env.example` to `.env`.
-   - If optional release signing secrets (`KEYSTORE_BASE64`, `STORE_PASSWORD`, `KEY_PASSWORD`) are configured in the repository, it also builds the signed production release APK (`assembleRelease`).
-4. **Artifact Packaging**:
-   - `SJP-Pulse-beta-0.X-debug.apk` (Ready-to-install Android APK)
-   - `SJP-Pulse-beta-0.X-release.apk` (Included automatically when signing secrets are set)
-   - `SJP-Pulse-beta-0.X-source.zip` (Complete source code snapshot of the pushed commit)
-   - GitHub's native `Source code (zip)` and `Source code (tar.gz)` archives.
-5. **Tag & Release Publication**:
-   - Pushes the annotated tag (`beta-0.X`) to your private repository and publishes a GitHub Pre-Release titled **`beta 0.X`** with all compiled APKs and source archives attached.
+1. **Gradle 9.3.1 & JDK 21 Alignment**: The project uses Android Gradle Plugin `9.1.1` and `compileSdk 36.1`, which require **Gradle 9.3.1** and **JDK 21** (updated from Gradle 8.11.1 / JDK 17) plus automatic Android SDK license acceptance (`yes | sdkmanager --licenses`).
+2. **First-Run Tag Detection (`pipefail` Fix)**: On a repository with zero existing `beta-0.*` tags, `grep` in a piped command returns exit code `1`, which caused Bash `-o pipefail` to abort before creating `beta-0.1`. Replaced with a pure Bash tag parser loop that safely starts at `beta-0.1` and increments to `beta-0.2`, `beta-0.3`, etc.
+3. **Complete Tags, Titles, Descriptions & Release Assets**:
+   - **Annotated Git Tag**: `beta-0.1`, `beta-0.2`, etc., pushed directly to origin with full release notes embedded in the tag description.
+   - **Release Title**: `beta 0.1 — SJP Pulse (App APK + Source Code)`
+   - **Release Description (`release-notes.md`)**: Auto-generated Markdown containing build metadata, package ID, deliverables list, feature overview, and the Git commit changelog since the previous beta tag.
+   - **Attached Application & Source Code Files**:
+     - `SJP-Pulse-beta-0.X.apk` (Compiled Android application ready to install)
+     - `SJP-Pulse-beta-0.X-source.zip` (Complete repository source code in `.zip` format)
+     - `SJP-Pulse-beta-0.X-source.tar.gz` (Complete repository source code in `.tar.gz` format)
 
 ---
 
-## 2. Quick Setup for Your Private Repository
+## 2. Required Private Repository Permission (One-Time Check)
 
-### Step 1: Enable Workflow Write Permissions
-In your private GitHub repository:
-1. Go to **Settings → Actions → General**.
+For GitHub Actions to push tags (`beta-0.1`, `beta-0.2`) and create releases in a private repository, ensure `GITHUB_TOKEN` has write access:
+
+1. Open your private repository on GitHub and go to **Settings → Actions → General**.
 2. Scroll down to **Workflow permissions**.
-3. Select **Read and write permissions** and click **Save** (this allows `GITHUB_TOKEN` to push tags `beta-0.1`, `beta-0.2`, etc., and upload release APK assets).
-
-### Step 2: Push Your Code
-Push your repository to `main` (or `master`):
-
-```bash
-git remote add origin git@github.com:<your-username>/<your-private-repo>.git
-git branch -M main
-git push -u origin main
-```
-
-Every subsequent `git push` to `main` will automatically build and publish the next sequential release (`beta 0.1` → `beta 0.2` → `beta 0.3`).
+3. Select **Read and write permissions** and click **Save**.
 
 ---
 
-## 3. Optional: Signed Release APK Secrets
+## 3. How the Automated Release Flow Works
 
-Out of the box, the workflow builds and attaches an installable `debug` APK without requiring any secrets. If you also want `SJP-Pulse-beta-0.X-release.apk` signed with your own upload key, add these three secrets under **Settings → Secrets and variables → Actions**:
+Every time you push to `main` or `master` (or click **Run workflow** under the **Actions** tab):
 
-| Secret Name | Value Description |
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  git push origin main                                                │
+└──────────────────────────────────┬───────────────────────────────────┘
+                                   ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│  1. Inspect existing `beta-0.*` tags in repository                   │
+│     • None found  ──► Next Tag: `beta-0.1`                           │
+│     • `beta-0.1`  ──► Next Tag: `beta-0.2`                           │
+└──────────────────────────────────┬───────────────────────────────────┘
+                                   ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│  2. Generate Release Title & Markdown Description (`release-notes`)  │
+│     • Title: "beta 0.X — SJP Pulse (App APK + Source Code)"          │
+│     • Description: Metadata + Feature Summary + Commit Changelog     │
+└──────────────────────────────────┬───────────────────────────────────┘
+                                   ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│  3. Build & Package Deliverables                                     │
+│     • Compile Android App: `gradle :app:assembleDebug`               │
+│     • Package APK: `SJP-Pulse-beta-0.X.apk`                          │
+│     • Package Source Code: `SJP-Pulse-beta-0.X-source.zip` & `.tgz`  │
+└──────────────────────────────────┬───────────────────────────────────┘
+                                   ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│  4. Push Annotated Git Tag & Publish GitHub Release                  │
+│     • Pushes annotated tag `beta-0.X` with description               │
+│     • Publishes GitHub Release with APK + Source Code attached       │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 4. Optional: Signed Production Release APK
+
+By default, the workflow compiles and attaches an installable APK (`SJP-Pulse-beta-0.X.apk`) using a CI-generated keystore so zero manual setup is required. If you also want a custom-signed production APK (`SJP-Pulse-beta-0.X-signed-release.apk`) attached to each release, add these optional secrets in **Settings → Secrets and variables → Actions**:
+
+| Secret Name | Description |
 | :--- | :--- |
-| `KEYSTORE_BASE64` | Base64-encoded string of your `.jks` keystore (`base64 -w 0 my-upload-key.jks`) |
-| `STORE_PASSWORD` | Your keystore password |
-| `KEY_PASSWORD` | Your key password for alias `upload` |
-
----
-
-## 4. Skipping a Release on Minor Doc Edits (Optional)
-
-If you push a commit and do **not** want the workflow to trigger a new `beta 0.X` tag, include `[skip ci]` in your commit message:
-
-```bash
-git commit -m "chore: update notes [skip ci]"
-git push
-```
+| `KEYSTORE_BASE64` | Base64-encoded `.jks` keystore (`base64 -w 0 my-upload-key.jks`) |
+| `STORE_PASSWORD` | Keystore password |
+| `KEY_PASSWORD` | Key password for the `upload` alias |
