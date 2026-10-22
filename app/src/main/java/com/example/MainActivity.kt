@@ -15,12 +15,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Work
 import androidx.compose.material.icons.outlined.Analytics
 import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.History
-import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.WorkOutline
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -47,7 +47,7 @@ enum class SjpDestination(
     RECOMMENDATIONS("jobs", "Jobs For You", Icons.Filled.Work, Icons.Outlined.WorkOutline),
     TIMELINE("timeline", "History", Icons.Filled.History, Icons.Outlined.History),
     ANALYTICS("analytics", "Reports", Icons.Filled.Analytics, Icons.Outlined.Analytics),
-    PORTAL("portal", "Account", Icons.Filled.Person, Icons.Outlined.Person)
+    PORTAL("portal", "Portal", Icons.Filled.Language, Icons.Outlined.Language)
 }
 
 class MainActivity : ComponentActivity() {
@@ -94,22 +94,6 @@ fun SjpPulseApp(
             currentTab = SjpDestination.DASHBOARD
         }
     }
-
-    // Invisible Headless Background Browser Host (0.dp) that handles silent SJP login,
-    // multi-page API polling, and in-app job application submission in the background
-    HeadlessSjpBrowserHost(
-        sessionState = uiState.sessionState,
-        browserCommands = viewModel.browserCommands,
-        onSessionCaptured = { token, cookies ->
-            viewModel.onWebViewSessionCaptured(token, cookies)
-        },
-        onPayloadCaptured = { json, source ->
-            viewModel.onWebViewPayloadCaptured(json, source)
-        },
-        onOpenJobsCaptured = viewModel::onWebViewOpenJobsCaptured,
-        onProfileCaptured = viewModel::onWebViewCandidateProfileCaptured,
-        onFetchError = viewModel::onWebViewFetchError
-    )
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val isWideScreen = maxWidth >= 640.dp
@@ -190,6 +174,35 @@ fun SjpPulseApp(
                 }
 
                 Box(modifier = Modifier.weight(1f)) {
+                    // Keep PortalWebViewScreen persistently mounted in the composition tree!
+                    // When currentTab == PORTAL, it occupies the full screen so the user can interact
+                    // with sjp.gos.pk directly. When on other tabs, it shrinks to 0.dp so the logged-in
+                    // WebView instance and its cookies/session are NEVER destroyed.
+                    PortalWebViewScreen(
+                        uiState = uiState,
+                        browserCommands = viewModel.browserCommands,
+                        onSessionCaptured = { token, cookies ->
+                            viewModel.onWebViewSessionCaptured(token, cookies)
+                        },
+                        onPayloadCaptured = { json, source ->
+                            viewModel.onWebViewPayloadCaptured(json, source)
+                        },
+                        onOpenJobsCaptured = viewModel::onWebViewOpenJobsCaptured,
+                        onProfileCaptured = viewModel::onWebViewCandidateProfileCaptured,
+                        onFetchError = viewModel::onWebViewFetchError,
+                        onSaveCredentials = viewModel::saveAutoFillCredentials,
+                        onSaveConfig = viewModel::savePollingAndTokenConfig,
+                        onClearSession = viewModel::clearSessionAndData,
+                        onNavigateToDashboard = {
+                            currentTab = SjpDestination.DASHBOARD
+                        },
+                        modifier = if (currentTab == SjpDestination.PORTAL) {
+                            Modifier.fillMaxSize()
+                        } else {
+                            Modifier.size(0.dp)
+                        }
+                    )
+
                     when (currentTab) {
                         SjpDestination.DASHBOARD -> DashboardScreen(
                             uiState = uiState,
@@ -227,19 +240,9 @@ fun SjpPulseApp(
                             onGenerateTextReport = viewModel::buildExecutiveTextReport
                         )
 
-                        SjpDestination.PORTAL -> NativeLoginAndAccountScreen(
-                            uiState = uiState,
-                            onLoginWithCredentials = viewModel::loginWithCnicAndPassword,
-                            onSyncNow = viewModel::syncFromPortalApi,
-                            onPayloadCaptured = { json, source ->
-                                viewModel.onWebViewPayloadCaptured(json, source)
-                            },
-                            onSaveConfig = viewModel::savePollingAndTokenConfig,
-                            onClearSession = viewModel::clearSessionAndData,
-                            onNavigateToDashboard = {
-                                currentTab = SjpDestination.DASHBOARD
-                            }
-                        )
+                        SjpDestination.PORTAL -> {
+                            // PortalWebViewScreen is already rendered at Modifier.fillMaxSize() above
+                        }
                     }
                 }
             }

@@ -167,17 +167,11 @@ class SjpTrackerViewModel(application: Application) : AndroidViewModel(applicati
         // Android 16 (API 36) Safe Deferred Startup:
         // Wait until after the first UI frame renders before touching CookieManager or network
         viewModelScope.launch {
-            delay(800)
+            delay(1200)
             val session = sessionPrefs.sessionFlow.first()
             val combinedCookies = repository.getCombinedPortalCookies(session.cookieHeader)
             if (combinedCookies.isNotBlank() || session.bearerToken.isNotBlank()) {
-                syncFromPortalApi()
-            } else if (session.rememberCredentials && session.hasSavedCredentials) {
-                loginWithCnicAndPassword(
-                    cnic = session.savedCnic,
-                    password = session.savedPassword,
-                    rememberCredentials = true
-                )
+                _browserCommands.tryEmit(BackgroundBrowserCommand.FetchAllPortalData(session.bearerToken))
             }
         }
 
@@ -191,87 +185,29 @@ class SjpTrackerViewModel(application: Application) : AndroidViewModel(applicati
                 val combinedCookies = repository.getCombinedPortalCookies(latestSession.cookieHeader)
                 if (latestSession.autoPollEnabled && (combinedCookies.isNotBlank() || latestSession.bearerToken.isNotBlank())) {
                     _browserCommands.tryEmit(BackgroundBrowserCommand.FetchAllPortalData(latestSession.bearerToken))
-                    controlState.value = controlState.value.copy(isSyncing = true)
                     val res = repository.pollEndpointFromNetwork()
-                    repository.syncProfileAndOpenJobsFromNetwork()
-                    controlState.value = controlState.value.copy(
-                        isSyncing = false,
-                        bannerFeedback = res.message
-                    )
-                } else if (latestSession.autoPollEnabled && latestSession.rememberCredentials && latestSession.hasSavedCredentials) {
-                    _browserCommands.tryEmit(
-                        BackgroundBrowserCommand.PerformHeadlessLogin(
-                            latestSession.savedCnic,
-                            latestSession.savedPassword
+                    if (res.success) {
+                        repository.syncProfileAndOpenJobsFromNetwork()
+                        controlState.value = controlState.value.copy(
+                            isSyncing = false,
+                            bannerFeedback = res.message
                         )
-                    )
+                    }
                 }
             }
         }
     }
 
-    /**
-     * Native Login entry point: Saves credentials if requested, attempts direct API login,
-     * and dispatches headless DOM login to the invisible background browser engine.
-     */
-    fun loginWithCnicAndPassword(
+    fun saveAutoFillCredentials(
         cnic: String,
         password: String,
         rememberCredentials: Boolean
     ) {
-        if (cnic.isBlank() || password.isBlank()) {
-            controlState.value = controlState.value.copy(
-                bannerFeedback = "Please enter both your CNIC and SJP Password."
-            )
-            return
-        }
-
         viewModelScope.launch {
             sessionPrefs.saveCredentials(cnic, password, rememberCredentials)
             controlState.value = controlState.value.copy(
-                isLoggingIn = true,
-                isSyncing = true,
-                loginProgressMessage = "Authenticating CNIC ${cnic.trim()} with sjp.gos.pk in background…"
+                bannerFeedback = "Saved auto-fill credentials for SJP WebView"
             )
-
-            // 1. Trigger headless background browser DOM login
-            _browserCommands.tryEmit(
-                BackgroundBrowserCommand.PerformHeadlessLogin(cnic.trim(), password)
-            )
-
-            // 2. Simultaneously try direct REST API login against usr-svc.sjp.gos.pk
-            val directSuccess = repository.attemptDirectApiLogin(cnic.trim(), password)
-            if (directSuccess) {
-                controlState.value = controlState.value.copy(
-                    loginProgressMessage = "Direct SJP API authenticated! Fetching applied jobs & eligibility profile…"
-                )
-                val syncRes = repository.pollEndpointFromNetwork()
-                repository.syncProfileAndOpenJobsFromNetwork()
-                controlState.value = controlState.value.copy(
-                    isLoggingIn = false,
-                    isSyncing = false,
-                    loginProgressMessage = null,
-                    bannerFeedback = syncRes.message
-                )
-            } else {
-                // Allow background browser DOM login 5 seconds to complete SPA login & token capture
-                delay(5500)
-                val updatedSession = sessionPrefs.sessionFlow.first()
-                if (controlState.value.isLoggingIn) {
-                    _browserCommands.tryEmit(
-                        BackgroundBrowserCommand.FetchAllPortalData(updatedSession.bearerToken)
-                    )
-                    delay(2000)
-                    val pollRes = repository.pollEndpointFromNetwork()
-                    repository.syncProfileAndOpenJobsFromNetwork()
-                    controlState.value = controlState.value.copy(
-                        isLoggingIn = false,
-                        isSyncing = false,
-                        loginProgressMessage = null,
-                        bannerFeedback = pollRes.message
-                    )
-                }
-            }
         }
     }
 
@@ -385,14 +321,28 @@ class SjpTrackerViewModel(application: Application) : AndroidViewModel(applicati
     fun syncFromPortalApi() {
         viewModelScope.launch {
             val session = sessionPrefs.sessionFlow.first()
-            _browserCommands.tryEmit(BackgroundBrowserCommand.FetchAllPortalData(session.bearerToken))
-            controlState.value = controlState.value.copy(isSyncing = true)
-            val result = repository.pollEndpointFromNetwork()
-            repository.syncProfileAndOpenJobsFromNetwork()
             controlState.value = controlState.value.copy(
-                isSyncing = false,
-                bannerFeedback = result.message
+                isSyncing = true,
+                bannerFeedback = "Fetching applications from SJP via WebView session…"
             )
+            // Primary: Run exact Firefox bookmarklet multi-page fetch inside the live WebView
+            _browserCommands.tryEmit(BackgroundBrowserCommand.FetchAllPortalData(session.bearerToken))
+            // Wait briefly for WebView JS bridge to deliver payload; if not, try direct OkHttp fallback
+            delay(2500)
+            if (controlState.value.isSyncing) {
+                val result = repository.pollEndpointFromNetwork()
+                if (result.success) {
+                    repository.syncProfileAndOpenJobsFromNetwork()
+                    controlState.value = controlState.value.copy(
+                        isSyncing = false,
+                        bannerFeedback = result.message
+                    )
+                } else {
+                    controlState.value = controlState.value.copy(
+                        isSyncing = false
+                    )
+                }
+            }
         }
     }
 
