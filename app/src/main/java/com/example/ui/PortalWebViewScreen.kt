@@ -14,6 +14,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -75,6 +76,10 @@ fun buildSjpMultiPageFetchJs(savedBearerToken: String = ""): String {
           var r = await fetch(u, { credentials: 'include', headers: headers });
           var t = await r.text();
           if (!r.ok) {
+            if (r.status === 401 || r.status === 403) {
+              AndroidSjpBridge.onUserLoggedOut();
+              return;
+            }
             if (page === 1) {
               AndroidSjpBridge.onFetchError('HTTP ' + r.status + ': Please make sure you are logged into sjp.gos.pk');
               return;
@@ -113,7 +118,8 @@ fun buildSjpMultiPageFetchJs(savedBearerToken: String = ""): String {
 class SjpWebJsBridge(
     private val onTokenCaptured: (String) -> Unit,
     private val onPayloadCaptured: (String) -> Unit,
-    private val onErrorCaptured: (String) -> Unit
+    private val onErrorCaptured: (String) -> Unit,
+    private val onLoggedOut: () -> Unit
 ) {
     @JavascriptInterface
     fun onAuthTokenFound(token: String?) {
@@ -135,6 +141,11 @@ class SjpWebJsBridge(
             onErrorCaptured(errorMsg)
         }
     }
+
+    @JavascriptInterface
+    fun onUserLoggedOut() {
+        onLoggedOut()
+    }
 }
 
 @SuppressLint("SetJavaScriptEnabled")
@@ -155,6 +166,20 @@ fun PortalWebViewScreen(
     var showConfigDialog by remember { mutableStateOf(false) }
     var showImportJsonDialog by remember { mutableStateOf(false) }
 
+    val performFullPortalLogout = remember(onClearSession) {
+        {
+            CookieManager.getInstance().removeAllCookies(null)
+            AndroidCompatHelper.flushCookiesCompat()
+            webViewRef?.evaluateJavascript(
+                "try { window.localStorage.clear(); window.sessionStorage.clear(); } catch(e) {}",
+                null
+            )
+            webViewRef?.clearCache(true)
+            webViewRef?.clearHistory()
+            onClearSession()
+        }
+    }
+
     val multiPageFetchScript = remember(sessionState.bearerToken) {
         buildSjpMultiPageFetchJs(sessionState.bearerToken)
     }
@@ -168,6 +193,7 @@ fun PortalWebViewScreen(
     val autoInterceptorJs = remember(multiPageFetchScript) {
         """
         (function() {
+          var foundJwt = false;
           try {
             for (var j = 0; j < window.localStorage.length; j++) {
               var k = window.localStorage.key(j);
@@ -175,6 +201,7 @@ fun PortalWebViewScreen(
               if (raw && raw.indexOf('eyJ') !== -1) {
                 var m = raw.match(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/);
                 if (m && m[0]) {
+                  foundJwt = true;
                   AndroidSjpBridge.onAuthTokenFound(m[0]);
                 }
               }
@@ -184,10 +211,43 @@ fun PortalWebViewScreen(
           if (!window.__sjpPulseHooked) {
             window.__sjpPulseHooked = true;
 
+            // Detect clicks on Logout / Sign Out buttons inside the SJP web portal
+            document.addEventListener('click', function(ev) {
+              try {
+                var el = ev.target ? ev.target.closest('button, a, li, div, span') : null;
+                if (!el) return;
+                var txt = (el.innerText || el.textContent || el.getAttribute('aria-label') || el.getAttribute('title') || '').trim().toLowerCase();
+                var href = (el.getAttribute('href') || '').toLowerCase();
+                if (txt === 'logout' || txt === 'log out' || txt === 'sign out' || txt === 'signout' ||
+                    txt.indexOf('log out') !== -1 || txt.indexOf('sign out') !== -1 || href.indexOf('logout') !== -1) {
+                  AndroidSjpBridge.onUserLoggedOut();
+                }
+              } catch(e) {}
+            }, true);
+
+            // Detect localStorage.clear() or token removal on logout
+            try {
+              var origClear = Storage.prototype.clear;
+              Storage.prototype.clear = function() {
+                origClear.apply(this, arguments);
+                AndroidSjpBridge.onUserLoggedOut();
+              };
+              var origRemove = Storage.prototype.removeItem;
+              Storage.prototype.removeItem = function(key) {
+                origRemove.apply(this, arguments);
+                if (key && /token|auth|jwt|user|session/i.test(String(key))) {
+                  AndroidSjpBridge.onUserLoggedOut();
+                }
+              };
+            } catch(e) {}
+
             var origOpen = XMLHttpRequest.prototype.open;
             var origSetHeader = XMLHttpRequest.prototype.setRequestHeader;
             XMLHttpRequest.prototype.open = function(method, url) {
               this.__sjpUrl = url || '';
+              if (this.__sjpUrl && /logout|signout/i.test(this.__sjpUrl)) {
+                AndroidSjpBridge.onUserLoggedOut();
+              }
               return origOpen.apply(this, arguments);
             };
             XMLHttpRequest.prototype.setRequestHeader = function(header, value) {
@@ -208,6 +268,10 @@ fun PortalWebViewScreen(
               window.fetch = function() {
                 var args = arguments;
                 try {
+                  var reqUrl = String(args[0] || '');
+                  if (/logout|signout/i.test(reqUrl)) {
+                    AndroidSjpBridge.onUserLoggedOut();
+                  }
                   var opts = args[1] || {};
                   var hdrs = opts.headers || {};
                   var authVal = hdrs['Authorization'] || hdrs['authorization'];
@@ -258,7 +322,7 @@ fun PortalWebViewScreen(
                                 text = if (sessionState.hasActiveSession) {
                                     "Session Encrypted (AES-256-GCM)"
                                 } else {
-                                    "Log in to sjp.gos.pk below"
+                                    "Logged Out • No Data Retained"
                                 },
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Bold
@@ -272,7 +336,22 @@ fun PortalWebViewScreen(
                         }
                     }
 
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                        if (sessionState.hasActiveSession) {
+                            IconButton(
+                                onClick = {
+                                    performFullPortalLogout()
+                                    webViewRef?.loadUrl("https://sjp.gos.pk")
+                                },
+                                modifier = Modifier.testTag("webview_logout_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.Logout,
+                                    contentDescription = "Log Out & Wipe App Data",
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                            }
+                        }
                         IconButton(
                             onClick = { webViewRef?.reload() },
                             modifier = Modifier.testTag("webview_reload_button")
@@ -356,18 +435,29 @@ fun PortalWebViewScreen(
                     addJavascriptInterface(
                         SjpWebJsBridge(
                             onTokenCaptured = { token ->
-                                val combinedCookies = listOf(
-                                    cookieManager.getCookie("https://usr-svc.sjp.gos.pk").orEmpty(),
-                                    cookieManager.getCookie("https://sjp.gos.pk").orEmpty()
-                                ).filter { it.isNotBlank() }.joinToString("; ")
-                                onSessionCaptured(token, combinedCookies)
+                                post {
+                                    val combinedCookies = listOf(
+                                        cookieManager.getCookie("https://usr-svc.sjp.gos.pk").orEmpty(),
+                                        cookieManager.getCookie("https://sjp.gos.pk").orEmpty()
+                                    ).filter { it.isNotBlank() }.joinToString("; ")
+                                    onSessionCaptured(token, combinedCookies)
+                                }
                             },
                             onPayloadCaptured = { json ->
-                                onPayloadCaptured(json, "SJP Live Fetch")
-                                onNavigateToDashboard()
+                                post {
+                                    onPayloadCaptured(json, "SJP Live Fetch")
+                                    onNavigateToDashboard()
+                                }
                             },
                             onErrorCaptured = { err ->
-                                onFetchError(err)
+                                post {
+                                    onFetchError(err)
+                                }
+                            },
+                            onLoggedOut = {
+                                post {
+                                    performFullPortalLogout()
+                                }
                             }
                         ),
                         "AndroidSjpBridge"
@@ -378,7 +468,12 @@ fun PortalWebViewScreen(
                         override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                             super.onPageStarted(view, url, favicon)
                             isLoadingPage = true
-                            if (!url.isNullOrBlank()) currentUrl = url
+                            if (!url.isNullOrBlank()) {
+                                currentUrl = url
+                                if (url.lowercase().contains("logout") || url.lowercase().contains("signout")) {
+                                    performFullPortalLogout()
+                                }
+                            }
                         }
 
                         override fun onPageFinished(view: WebView?, url: String?) {
@@ -398,7 +493,6 @@ fun PortalWebViewScreen(
                             }
 
                             view?.evaluateJavascript(autoInterceptorJs, null)
-                            view?.evaluateJavascript(multiPageFetchScript, null)
                         }
                     }
 
@@ -429,9 +523,7 @@ fun PortalWebViewScreen(
                 showConfigDialog = false
             },
             onClearSession = {
-                CookieManager.getInstance().removeAllCookies(null)
-                AndroidCompatHelper.flushCookiesCompat()
-                onClearSession()
+                performFullPortalLogout()
                 showConfigDialog = false
             }
         )
@@ -575,7 +667,7 @@ private fun SessionAndPollingConfigDialog(
                     onClick = onClearSession,
                     colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
                 ) {
-                    Text("Wipe Encrypted Session & Cache")
+                    Text("Log Out & Wipe All App Data")
                 }
             }
         },

@@ -13,12 +13,10 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Analytics
-import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.outlined.Analytics
-import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Language
@@ -45,7 +43,6 @@ enum class SjpDestination(
     val unselectedIcon: ImageVector
 ) {
     DASHBOARD("dashboard", "Applied", Icons.Filled.Dashboard, Icons.Outlined.Dashboard),
-    SUGGESTIONS("suggestions", "Auto-Apply", Icons.Filled.AutoAwesome, Icons.Outlined.AutoAwesome),
     TIMELINE("timeline", "History", Icons.Filled.History, Icons.Outlined.History),
     ANALYTICS("analytics", "Analytics", Icons.Filled.Analytics, Icons.Outlined.Analytics),
     PORTAL("portal", "SJP Login", Icons.Filled.Language, Icons.Outlined.Language)
@@ -187,15 +184,6 @@ fun SjpPulseApp(
                             onDismissBanner = viewModel::dismissBannerFeedback
                         )
 
-                        SjpDestination.SUGGESTIONS -> SuggestedJobsScreen(
-                            uiState = uiState,
-                            onLogStep = viewModel::appendHeadlessLog,
-                            onSetScanning = viewModel::setScanningSuggestions,
-                            onJobsDiscovered = viewModel::onHeadlessJobsDiscovered,
-                            onUpdateApplyStatus = viewModel::updateHeadlessApplyStatus,
-                            onOpenPortalLogin = { currentTab = SjpDestination.PORTAL }
-                        )
-
                         SjpDestination.TIMELINE -> TimelineScreen(
                             historyList = uiState.historyList,
                             unreadCount = uiState.unreadHistoryCount,
@@ -204,9 +192,7 @@ fun SjpPulseApp(
                         )
 
                         SjpDestination.ANALYTICS -> AnalyticsAndReportScreen(
-                            allJobs = uiState.allJobs,
-                            onGenerateCsv = viewModel::buildCsvReport,
-                            onGenerateTextReport = viewModel::buildExecutiveTextReport
+                            allJobs = uiState.allJobs
                         )
 
                         SjpDestination.PORTAL -> PortalWebViewScreen(

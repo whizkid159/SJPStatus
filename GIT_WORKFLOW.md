@@ -1,30 +1,37 @@
-# Git Workflow & Automated Beta Release Guide (`beta 0.1`, `beta 0.2`, …)
+# Git Workflow & Automated Beta Release Guide (`beta 0.3` Onwards)
 
-This document explains how **SJP Pulse** automatically builds the Android application APK, archives the complete source code, creates an annotated Git tag (`beta-0.1`, `beta-0.2`, `beta-0.3`, …), and publishes a full GitHub Release with **Tag**, **Title**, **Description**, **App APK**, and **Source Code** on every push to your private repository.
-
----
-
-## 1. Root Cause of the Step 4 Failure & How It Was Resolved
-
-In your screenshot and logs (`4_Setup Android SDK & Accept All SDK Licenses.txt`), the run failed at `android-actions/setup-android@v3` after 10 seconds because that third-party action attempts to re-install legacy command-line tools on GitHub's `ubuntu-latest` runner image.
-
-To make the workflow fast and self-contained without fragile third-party setup actions:
-1. **Removed `android-actions/setup-android@v3`**: Replaced with a native Bash step (`Configure Android SDK & Write License Hashes`) that uses the pre-installed Android SDK on `ubuntu-latest` (`/usr/local/lib/android/sdk`) and directly writes all official Android SDK license hashes (`android-sdk-license`, `android-sdk-preview-license`, etc.) so Gradle can automatically provision `compileSdk 36.1`.
-2. **Direct Gradle 9.3.1 Binary Setup**: Downloads `gradle-9.3.1-bin.zip` directly from `services.gradle.org` to match `gradle-wrapper.properties` and AGP `9.1.1`.
-3. **Complete Release Metadata & Assets via Native GitHub CLI (`gh release create`)**:
-   - **Tag**: `beta-0.1`, `beta-0.2`, `beta-0.3`, … (annotated Git tag pushed to origin).
-   - **Title**: `beta 0.1 — SJP Pulse (App APK + Source Code)`
-   - **Description**: Detailed Markdown release notes (`release-notes.md`) including build timestamp, commit SHA, package ID, feature summary, and commit changelog.
-   - **Application & Source Code Attachments**:
-     - `SJP-Pulse-beta-0.X.apk` (Compiled Android application)
-     - `SJP-Pulse-beta-0.X-source.zip` (Complete repository source code ZIP)
-     - `SJP-Pulse-beta-0.X-source.tar.gz` (Complete repository source code TAR.GZ)
+This document explains how **SJP Pulse** automatically builds the Android application APK, archives the complete source code, cleans up orphaned git tags from deleted releases, and publishes sequential GitHub Releases (`beta 0.3`, `beta 0.4`, …) with **Tag**, **Title**, **Description**, **App APK**, and **Source Code** on every push to your private repository.
 
 ---
 
-## 2. Required Private Repository Permission
+## 1. How Version Numbering Works (`beta 0.3` Onwards)
 
-Make sure `GITHUB_TOKEN` has permission to push tags and create releases:
+When you delete a release in the GitHub UI, GitHub often leaves the underlying Git tag (e.g., `beta-0.3`, `beta-0.4`, `beta-0.5`, `beta-0.6`) in the repository. Previously, checking `git tag -l` caused the workflow to skip ahead to `beta 0.6`.
+
+The workflow (`.github/workflows/release-beta.yml`) now:
+1. Queries **only active published GitHub Releases** (`gh release list`) rather than raw Git tags, with a baseline floor of `beta-0.2`.
+2. Automatically deletes any orphaned remote Git tags higher than the latest active GitHub Release (`beta-0.3`, `beta-0.4`, `beta-0.5`, `beta-0.6`, etc.).
+3. Publishes your next push as **`beta 0.3`** (tag `beta-0.3`), and subsequent pushes as **`beta 0.4`**, **`beta 0.5`**, etc. If you ever delete a future release on GitHub, the next push will automatically reuse that deleted version number.
+
+---
+
+## 2. Release Deliverables
+
+Every push to `main` or `master` produces a GitHub Pre-Release containing:
+- **Tag**: `beta-0.3`, `beta-0.4`, …
+- **Title**: `beta 0.3 — SJP Pulse (Android 7–17 Release APK + Source Code)`
+- **Description**: Markdown release notes (`release-notes.md`) with build timestamp, commit SHA, feature summary, and commit changelog.
+- **Attached Files**:
+  - `SJP-Pulse-beta-0.X.apk` (Signed Production Release APK)
+  - `SJP-Pulse-beta-0.X-debug.apk` (Debug APK)
+  - `SJP-Pulse-beta-0.X-source.zip` (Complete source code ZIP)
+  - `SJP-Pulse-beta-0.X-source.tar.gz` (Complete source code TAR.GZ)
+
+---
+
+## 3. Required Private Repository Permission
+
+Ensure `GITHUB_TOKEN` has permission to push tags and create releases:
 1. In your private GitHub repository, navigate to **Settings → Actions → General**.
 2. Scroll down to **Workflow permissions**.
 3. Select **Read and write permissions** and click **Save**.

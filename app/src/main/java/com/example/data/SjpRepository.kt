@@ -16,7 +16,8 @@ data class SyncResult(
     val success: Boolean,
     val totalApplications: Int,
     val changedCount: Int,
-    val message: String
+    val message: String,
+    val loggedOut: Boolean = false
 )
 
 class SjpRepository(
@@ -77,6 +78,7 @@ class SjpRepository(
                 .substringBefore("?")
 
             if (activeCookies.isBlank() && currentSession.bearerToken.isBlank()) {
+                clearAllTrackedData()
                 val msg = "No active SJP session. Please log in on the SJP Login tab first."
                 sessionPrefs.recordPollResult(
                     success = false,
@@ -85,7 +87,7 @@ class SjpRepository(
                 )
                 return@withContext SyncResult(
                     success = false,
-                    totalApplications = dao.getAllJobsSnapshot().size,
+                    totalApplications = 0,
                     changedCount = 0,
                     message = msg
                 )
@@ -120,6 +122,20 @@ class SjpRepository(
                     okHttpClient.newCall(requestBuilder.build()).execute().use { response ->
                         val bodyText = response.body?.string().orEmpty()
                         if (!response.isSuccessful) {
+                            if (response.code == 401 || response.code == 403) {
+                                // User logged out or session invalidated: do not retain any application data
+                                clearAllTrackedData()
+                                sessionPrefs.clearSession()
+                                val logoutMsg = "Logged out from SJP. All local application data has been cleared."
+                                return@withContext SyncResult(
+                                    success = false,
+                                    totalApplications = 0,
+                                    changedCount = 0,
+                                    message = logoutMsg,
+                                    loggedOut = true
+                                )
+                            }
+
                             val errMsg = "HTTP ${response.code}: ${bodyText.take(160).ifBlank { "Session expired — please open SJP Login tab" }}"
                             sessionPrefs.recordPollResult(
                                 success = false,
@@ -267,6 +283,7 @@ class SjpRepository(
                 }
             }
 
+            dao.clearAllJobs()
             dao.upsertJobs(outcome.jobs)
             if (newHistoryEntries.isNotEmpty()) {
                 dao.insertStatusHistoryList(newHistoryEntries)

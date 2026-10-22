@@ -5,14 +5,11 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.ApplicationStatus
 import com.example.data.AppliedJobEntity
-import com.example.data.HeadlessApplyStatus
 import com.example.data.SessionPreferencesRepository
 import com.example.data.SjpDatabase
-import com.example.data.SjpPayloadParser
 import com.example.data.SjpRepository
 import com.example.data.SjpSessionState
 import com.example.data.StatusHistoryEntity
-import com.example.data.SuggestedSjpJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -41,10 +38,6 @@ data class SjpUiState(
     val allJobs: List<AppliedJobEntity> = emptyList(),
     val filteredJobs: List<AppliedJobEntity> = emptyList(),
     val historyList: List<StatusHistoryEntity> = emptyList(),
-    val suggestedJobs: List<SuggestedSjpJob> = emptyList(),
-    val isScanningSuggestions: Boolean = false,
-    val headlessApplyStatus: HeadlessApplyStatus = HeadlessApplyStatus.Idle,
-    val headlessBrowserLogs: List<String> = emptyList(),
     val sessionState: SjpSessionState = SjpSessionState(),
     val filterState: SjpFilterState = SjpFilterState(),
     val availableDepartments: List<String> = emptyList(),
@@ -74,12 +67,6 @@ data class SjpUiState(
 
 private data class InternalControlState(
     val filterState: SjpFilterState = SjpFilterState(),
-    val rawDiscoveredJobsJson: String = "",
-    val isScanningSuggestions: Boolean = false,
-    val headlessApplyStatus: HeadlessApplyStatus = HeadlessApplyStatus.Idle,
-    val headlessBrowserLogs: List<String> = listOf(
-        "[Headless Engine] Ready • AES-256-GCM AndroidKeyStore session vault active"
-    ),
     val isSyncing: Boolean = false,
     val bannerFeedback: String? = null,
     val selectedJobId: String? = null,
@@ -123,25 +110,10 @@ class SjpTrackerViewModel(application: Application) : AndroidViewModel(applicati
         val departments = jobs.map { it.departmentName }.distinct().sorted()
         val selectedJob = ctrl.selectedJobId?.let { id -> jobs.firstOrNull { it.applicationId == id } }
 
-        // Compute personalized suggested jobs from either discovered live jobs or intelligent recommendations derived from candidate's applied profile
-        val discoveredSuggestions = if (ctrl.rawDiscoveredJobsJson.isNotBlank()) {
-            SjpPayloadParser.parseAvailableJobsJson(ctrl.rawDiscoveredJobsJson, jobs)
-        } else {
-            emptyList()
-        }
-
-        val effectiveSuggestions = discoveredSuggestions.ifEmpty {
-            deriveProfileBasedSuggestions(jobs)
-        }
-
         SjpUiState(
             allJobs = jobs,
             filteredJobs = filtered,
             historyList = history,
-            suggestedJobs = effectiveSuggestions,
-            isScanningSuggestions = ctrl.isScanningSuggestions,
-            headlessApplyStatus = ctrl.headlessApplyStatus,
-            headlessBrowserLogs = ctrl.headlessBrowserLogs,
             sessionState = session,
             filterState = f,
             availableDepartments = departments,
@@ -181,74 +153,6 @@ class SjpTrackerViewModel(application: Application) : AndroidViewModel(applicati
                         bannerFeedback = res.message
                     )
                 }
-            }
-        }
-    }
-
-    /**
-     * Generates personalized department & role job suggestions based on the user's actual applied jobs
-     * when live vacancy listings haven't been scraped yet.
-     */
-    private fun deriveProfileBasedSuggestions(appliedJobs: List<AppliedJobEntity>): List<SuggestedSjpJob> {
-        if (appliedJobs.isEmpty()) return emptyList()
-        val topDepts = appliedJobs
-            .groupBy { it.departmentName }
-            .entries
-            .sortedByDescending { it.value.size }
-            .map { it.key }
-            .take(4)
-
-        return topDepts.mapIndexed { index, dept ->
-            val sampleApplied = appliedJobs.first { it.departmentName == dept }
-            SuggestedSjpJob(
-                jobId = "SJP-DEPT-${index + 1}",
-                jobTitle = "${sampleApplied.jobTitle} (Next Cycle / Related Cadre)",
-                departmentName = dept,
-                bpsScale = sampleApplied.bpsScale,
-                lastDateToApply = "Check Portal",
-                districtOrQuota = "Sindh Merit / Departmental Quota",
-                minQualification = "Matched from your applied profile (#${sampleApplied.applicationId})",
-                totalPositions = 1,
-                matchScorePercent = (96 - index * 4).coerceAtLeast(80),
-                matchReason = "Recommended based on your ${appliedJobs.count { it.departmentName == dept }} application(s) in $dept",
-                applyUrl = "https://sjp.gos.pk/jobs",
-                isAlreadyApplied = false
-            )
-        }
-    }
-
-    fun appendHeadlessLog(logLine: String) {
-        val current = controlState.value
-        val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
-        val updatedLogs = (current.headlessBrowserLogs + "[$timeFmt] $logLine").takeLast(40)
-        controlState.value = current.copy(headlessBrowserLogs = updatedLogs)
-    }
-
-    fun setScanningSuggestions(scanning: Boolean) {
-        controlState.value = controlState.value.copy(isScanningSuggestions = scanning)
-    }
-
-    fun onHeadlessJobsDiscovered(rawJson: String, count: Int) {
-        appendHeadlessLog("Discovered $count active vacancy record(s) from SJP portal.")
-        controlState.value = controlState.value.copy(
-            rawDiscoveredJobsJson = rawJson,
-            isScanningSuggestions = false,
-            bannerFeedback = if (count > 0) {
-                "Headless browser discovered $count available SJP jobs matching your profile"
-            } else {
-                "Headless scan completed on sjp.gos.pk"
-            }
-        )
-    }
-
-    fun updateHeadlessApplyStatus(status: HeadlessApplyStatus) {
-        controlState.value = controlState.value.copy(headlessApplyStatus = status)
-        if (status is HeadlessApplyStatus.Completed) {
-            controlState.value = controlState.value.copy(
-                bannerFeedback = status.summaryMessage
-            )
-            if (status.success) {
-                syncFromPortalApi()
             }
         }
     }
@@ -410,92 +314,11 @@ class SjpTrackerViewModel(application: Application) : AndroidViewModel(applicati
 
     fun clearSessionAndData() {
         viewModelScope.launch {
-            sessionPrefs.clearSession()
             repository.clearAllTrackedData()
-            controlState.value = controlState.value.copy(
-                bannerFeedback = "Cleared encrypted SJP session and local cache"
+            sessionPrefs.clearSession()
+            controlState.value = InternalControlState(
+                bannerFeedback = "Logged out from SJP. All application data and session tokens have been removed."
             )
         }
-    }
-
-    fun buildCsvReport(
-        jobs: List<AppliedJobEntity>,
-        includeRemarks: Boolean,
-        includeNotes: Boolean
-    ): String {
-        val sb = StringBuilder()
-        val headers = mutableListOf(
-            "Application ID",
-            "Job Title",
-            "Department",
-            "Current Status",
-            "Job Offered",
-            "Interview Status",
-            "Offer Record",
-            "Applied Date"
-        )
-        if (includeRemarks) headers.add("Rejection Reason")
-        if (includeNotes) headers.add("Personal Notes")
-        sb.appendLine(headers.joinToString(","))
-
-        for (job in jobs) {
-            val row = mutableListOf(
-                escapeCsv(job.applicationId),
-                escapeCsv(job.jobTitle),
-                escapeCsv(job.departmentName),
-                escapeCsv(job.rawStatusString),
-                escapeCsv(if (job.jobOffered) "YES" else "NO"),
-                escapeCsv(job.jobInterviewStatus),
-                escapeCsv(if (job.hasOfferRecord) "PRESENT" else "NONE"),
-                escapeCsv(job.appliedDate)
-            )
-            if (includeRemarks) row.add(escapeCsv(job.reasonForRejected))
-            if (includeNotes) row.add(escapeCsv(job.userNotes))
-            sb.appendLine(row.joinToString(","))
-        }
-        return sb.toString()
-    }
-
-    fun buildExecutiveTextReport(
-        jobs: List<AppliedJobEntity>,
-        includeRemarks: Boolean,
-        includeNotes: Boolean
-    ): String {
-        val fmt = SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.US)
-        val sb = StringBuilder()
-        sb.appendLine("==================================================")
-        sb.appendLine("   SJP PULSE — CANDIDATE APPLICATION STATUS REPORT")
-        sb.appendLine("==================================================")
-        sb.appendLine("Generated: ${fmt.format(Date())}")
-        sb.appendLine("Endpoint: usr-svc.sjp.gos.pk/api/v2/candidates/application/getAllAppliedJobsByCandidate")
-        sb.appendLine("Total Applications: ${jobs.size}")
-        sb.appendLine("--------------------------------------------------")
-        sb.appendLine()
-
-        val grouped = jobs.groupBy { it.statusEnum }
-        for (status in ApplicationStatus.entries.sortedByDescending { it.funnelOrder }) {
-            val list = grouped[status].orEmpty()
-            if (list.isEmpty()) continue
-            sb.appendLine("▶ ${status.displayLabel.uppercase()} (${list.size})")
-            for (job in list) {
-                sb.appendLine("  • ${job.jobTitle}")
-                sb.appendLine("    Department: ${job.departmentName}")
-                sb.appendLine("    Application ID: ${job.applicationId} | Current Status: ${job.rawStatusString}")
-                sb.appendLine("    Job Offered: ${if (job.jobOffered) "YES" else "NO"} | Interview: ${job.jobInterviewStatus} | Offer Record: ${if (job.hasOfferRecord) "PRESENT" else "NONE"}")
-                if (includeRemarks && job.reasonForRejected.isNotBlank() && job.reasonForRejected != "—") {
-                    sb.appendLine("    Rejection Reason: ${job.reasonForRejected}")
-                }
-                if (includeNotes && job.userNotes.isNotBlank()) {
-                    sb.appendLine("    Personal Notes: ${job.userNotes}")
-                }
-                sb.appendLine()
-            }
-        }
-        return sb.toString()
-    }
-
-    private fun escapeCsv(value: String): String {
-        val sanitized = value.replace("\"", "\"\"").replace("\n", " ")
-        return "\"$sanitized\""
     }
 }

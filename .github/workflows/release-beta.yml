@@ -54,7 +54,7 @@ jobs:
           echo "/opt/gradle-dist/gradle-${GRADLE_VER}/bin" >> "$GITHUB_PATH"
           /opt/gradle-dist/gradle-${GRADLE_VER}/bin/gradle --version
 
-      - name: Prepare Debug & Release Signing Keystores (Android 16 Compatible)
+      - name: Prepare Debug & Release Signing Keystores (Android 16/17 Compatible)
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           SECRET_STORE_PASS: ${{ secrets.STORE_PASSWORD }}
@@ -72,8 +72,6 @@ jobs:
               -dname "CN=Android Debug,O=Android,C=US"
           fi
 
-          # Always ensure a valid release keystore exists so assembleRelease builds a non-debuggable
-          # production APK that Android 16 Advanced Protection & OEM blockers allow to open.
           if [ -n "$KEYSTORE_BASE64" ]; then
             echo "$KEYSTORE_BASE64" | base64 --decode > "${GITHUB_WORKSPACE}/my-upload-key.jks"
             echo "KEYSTORE_PATH=${GITHUB_WORKSPACE}/my-upload-key.jks" >> "$GITHUB_ENV"
@@ -102,13 +100,18 @@ jobs:
             fi
           fi
 
-      - name: Determine Next Sequential Beta Tag, Title & Description
+      - name: Determine Next Sequential Beta Tag (beta 0.3 onwards from Active Releases)
         id: meta
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git fetch --tags --force || true
-          EXISTING_TAGS=$(git tag -l "beta-0.*" || true)
-          LATEST_MINOR=0
-          for t in $EXISTING_TAGS; do
+
+          # Inspect ONLY active published GitHub Releases (ignoring orphaned git tags from deleted releases)
+          ACTIVE_RELEASE_TAGS=$(gh release list --limit 100 --json tagName --jq '.[].tagName' 2>/dev/null || true)
+
+          LATEST_MINOR=2
+          for t in $ACTIVE_RELEASE_TAGS; do
             num="${t#beta-0.}"
             if [[ "$num" =~ ^[0-9]+$ ]]; then
               if (( num > LATEST_MINOR )); then
@@ -117,18 +120,29 @@ jobs:
             fi
           done
 
+          # Clean up any leftover/orphaned git tags higher than LATEST_MINOR from previously deleted releases
+          ALL_GIT_TAGS=$(git tag -l "beta-0.*" || true)
+          for gt in $ALL_GIT_TAGS; do
+            gnum="${gt#beta-0.}"
+            if [[ "$gnum" =~ ^[0-9]+$ ]] && (( gnum > LATEST_MINOR )); then
+              echo "Deleting orphaned tag ${gt} from deleted release..."
+              git tag -d "${gt}" || true
+              git push origin ":refs/tags/${gt}" || true
+            fi
+          done
+
           NEXT_MINOR=$((LATEST_MINOR + 1))
           TAG_NAME="beta-0.${NEXT_MINOR}"
           BETA_LABEL="beta 0.${NEXT_MINOR}"
-          RELEASE_TITLE="beta 0.${NEXT_MINOR} — SJP Pulse (Android 7–16 Release APK + Source Code)"
+          RELEASE_TITLE="beta 0.${NEXT_MINOR} — SJP Pulse (Android 7–17 Release APK + Source Code)"
           BUILD_DATE=$(date -u +"%Y-%m-%d %H:%M UTC")
           SHORT_SHA="${GITHUB_SHA:0:7}"
 
-          if [ "$LATEST_MINOR" -gt 0 ]; then
-            PREV_TAG="beta-0.${LATEST_MINOR}"
+          PREV_TAG="beta-0.${LATEST_MINOR}"
+          if git rev-parse "${PREV_TAG}" >/dev/null 2>&1; then
             COMMIT_LOG=$(git log "${PREV_TAG}..HEAD" --pretty=format:"- %s (%h)" 2>/dev/null || git log -n 10 --pretty=format:"- %s (%h)")
           else
-            COMMIT_LOG=$(git log -n 10 --pretty=format:"- %s (%h)" 2>/dev/null || echo "- Initial beta release (${SHORT_SHA})")
+            COMMIT_LOG=$(git log -n 10 --pretty=format:"- %s (%h)" 2>/dev/null || echo "- Release ${BETA_LABEL} (${SHORT_SHA})")
           fi
           if [ -z "$COMMIT_LOG" ]; then
             COMMIT_LOG="- Automated build from commit ${SHORT_SHA}"
@@ -143,19 +157,20 @@ jobs:
             echo "- **Tag**: \`${TAG_NAME}\` (\`${BETA_LABEL}\`)"
             echo "- **Title**: ${RELEASE_TITLE}"
             echo "- **Application ID**: \`com.aistudio.sjppulse.vktrqm\`"
-            echo "- **Android Compatibility**: Android 7.0 (API 24) through Android 16 (API 36)"
+            echo "- **Android Compatibility**: Android 7.0 (API 24) through Android 16 (API 36) & Android 17 (API 36.1)"
             echo "- **Commit SHA**: \`${GITHUB_SHA}\`"
             echo ""
             echo "## Attached Deliverables (Application & Source Code)"
-            echo "- **Production Signed Release APK**: \`SJP-Pulse-${TAG_NAME}.apk\` *(Recommended for Android 14/15/16 devices)*"
+            echo "- **Production Signed Release APK**: \`SJP-Pulse-${TAG_NAME}.apk\`"
             echo "- **Debug APK**: \`SJP-Pulse-${TAG_NAME}-debug.apk\`"
             echo "- **Source Code (ZIP)**: \`SJP-Pulse-${TAG_NAME}-source.zip\`"
             echo "- **Source Code (TAR.GZ)**: \`SJP-Pulse-${TAG_NAME}-source.tar.gz\`"
             echo ""
             echo "## Key Features"
-            echo "- **Native In-App Login (CNIC & Password)**: Authenticates directly from the app using a headless background browser & API bridge."
-            echo "- **Smart Job Recommendations & In-App Apply**: Suggests open SJP jobs matched to your education, major, domicile, and age, with an Eligibility Match Breakdown & one-tap application submission."
-            echo "- **Hidden Backend Status Radar & 30-Min Poller**: Polls all pages of \`usr-svc.sjp.gos.pk/api/v2/candidates/application/getAllAppliedJobsByCandidate\` and sends push notifications on status transitions."
+            echo "- **Live SJP Multi-Page Polling**: Polls all pages of \`usr-svc.sjp.gos.pk/api/v2/candidates/application/getAllAppliedJobsByCandidate\` every 30 minutes and sends push notifications on status transitions."
+            echo "- **AES-256-GCM Session Encryption**: Encrypts session tokens and cookies via AndroidKeyStore before storing on disk."
+            echo "- **Zero Data Retention on Logout**: Automatically wipes all local job records, status history, and cached tokens immediately when logging out of \`sjp.gos.pk\`."
+            echo "- **Visual Analytics & Status Timeline**: Recruitment pipeline funnel, department breakdown, status transition diffs, raw JSON inspector, and personal interview reminders."
             echo ""
             echo "## Commits in This Release"
             echo "${COMMIT_LOG}"
