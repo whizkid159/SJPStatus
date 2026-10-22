@@ -59,11 +59,27 @@ interface SjpDao {
 
     @Query("DELETE FROM status_history")
     suspend fun clearAllHistory()
+
+    @Query("SELECT * FROM open_sjp_jobs ORDER BY fetchedAtTimestamp DESC, jobId DESC")
+    fun observeOpenJobs(): Flow<List<OpenJobEntity>>
+
+    @Query("SELECT * FROM open_sjp_jobs")
+    suspend fun getOpenJobsSnapshot(): List<OpenJobEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertOpenJobs(jobs: List<OpenJobEntity>)
+
+    @Query("DELETE FROM open_sjp_jobs")
+    suspend fun clearOpenJobs()
 }
 
 @Database(
-    entities = [AppliedJobEntity::class, StatusHistoryEntity::class],
-    version = 2,
+    entities = [
+        AppliedJobEntity::class,
+        StatusHistoryEntity::class,
+        OpenJobEntity::class
+    ],
+    version = 3,
     exportSchema = false
 )
 abstract class SjpDatabase : RoomDatabase() {

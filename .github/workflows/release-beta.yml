@@ -54,7 +54,11 @@ jobs:
           echo "/opt/gradle-dist/gradle-${GRADLE_VER}/bin" >> "$GITHUB_PATH"
           /opt/gradle-dist/gradle-${GRADLE_VER}/bin/gradle --version
 
-      - name: Prepare Keystore & Environment Config
+      - name: Prepare Debug & Release Signing Keystores (Android 16 Compatible)
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          SECRET_STORE_PASS: ${{ secrets.STORE_PASSWORD }}
+          SECRET_KEY_PASS: ${{ secrets.KEY_PASSWORD }}
         run: |
           if [ ! -f "debug.keystore" ]; then
             keytool -genkeypair -v \
@@ -67,23 +71,35 @@ jobs:
               -validity 10000 \
               -dname "CN=Android Debug,O=Android,C=US"
           fi
+
+          # Always ensure a valid release keystore exists so assembleRelease builds a non-debuggable
+          # production APK that Android 16 Advanced Protection & OEM blockers allow to open.
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 --decode > "${GITHUB_WORKSPACE}/my-upload-key.jks"
+            echo "KEYSTORE_PATH=${GITHUB_WORKSPACE}/my-upload-key.jks" >> "$GITHUB_ENV"
+            echo "STORE_PASSWORD=${SECRET_STORE_PASS}" >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=${SECRET_KEY_PASS}" >> "$GITHUB_ENV"
+          else
+            keytool -genkeypair -v \
+              -keystore "${GITHUB_WORKSPACE}/my-upload-key.jks" \
+              -storepass sjppulse2026 \
+              -alias upload \
+              -keypass sjppulse2026 \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=SJP Pulse Release,O=SJP Pulse,C=PK"
+            echo "KEYSTORE_PATH=${GITHUB_WORKSPACE}/my-upload-key.jks" >> "$GITHUB_ENV"
+            echo "STORE_PASSWORD=sjppulse2026" >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=sjppulse2026" >> "$GITHUB_ENV"
+          fi
+
           if [ ! -f ".env" ]; then
             if [ -f ".env.example" ]; then
               cp .env.example .env
             else
               touch .env
             fi
-          fi
-
-      - name: Restore Optional Release Keystore
-        env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-        run: |
-          if [ -n "$KEYSTORE_BASE64" ]; then
-            echo "$KEYSTORE_BASE64" | base64 --decode > "${GITHUB_WORKSPACE}/my-upload-key.jks"
-            echo "HAS_RELEASE_KEYSTORE=true" >> "$GITHUB_ENV"
-          else
-            echo "HAS_RELEASE_KEYSTORE=false" >> "$GITHUB_ENV"
           fi
 
       - name: Determine Next Sequential Beta Tag, Title & Description
@@ -104,7 +120,7 @@ jobs:
           NEXT_MINOR=$((LATEST_MINOR + 1))
           TAG_NAME="beta-0.${NEXT_MINOR}"
           BETA_LABEL="beta 0.${NEXT_MINOR}"
-          RELEASE_TITLE="beta 0.${NEXT_MINOR} — SJP Pulse (App APK + Source Code)"
+          RELEASE_TITLE="beta 0.${NEXT_MINOR} — SJP Pulse (Android 7–16 Release APK + Source Code)"
           BUILD_DATE=$(date -u +"%Y-%m-%d %H:%M UTC")
           SHORT_SHA="${GITHUB_SHA:0:7}"
 
@@ -127,18 +143,19 @@ jobs:
             echo "- **Tag**: \`${TAG_NAME}\` (\`${BETA_LABEL}\`)"
             echo "- **Title**: ${RELEASE_TITLE}"
             echo "- **Application ID**: \`com.aistudio.sjppulse.vktrqm\`"
+            echo "- **Android Compatibility**: Android 7.0 (API 24) through Android 16 (API 36)"
             echo "- **Commit SHA**: \`${GITHUB_SHA}\`"
             echo ""
             echo "## Attached Deliverables (Application & Source Code)"
-            echo "- **Android App APK**: \`SJP-Pulse-${TAG_NAME}.apk\` *(Installable on Android 7.0+ devices)*"
+            echo "- **Production Signed Release APK**: \`SJP-Pulse-${TAG_NAME}.apk\` *(Recommended for Android 14/15/16 devices)*"
+            echo "- **Debug APK**: \`SJP-Pulse-${TAG_NAME}-debug.apk\`"
             echo "- **Source Code (ZIP)**: \`SJP-Pulse-${TAG_NAME}-source.zip\`"
             echo "- **Source Code (TAR.GZ)**: \`SJP-Pulse-${TAG_NAME}-source.tar.gz\`"
             echo ""
             echo "## Key Features"
-            echo "- **Hidden Backend Status Radar**: Polls \`sjp.gos.pk/api/v2/candidates/application/getAllAppliedJobsByCandidate\` to unmask statuses (\`Shortlisted\`, \`Temporary Shortlisted\`, \`Offered\`, \`Temporary Offered\`, \`Under Scrutiny\`, \`Rejected\`)."
-            echo "- **Persistent SJP WebView Login**: Automatically captures and persists session cookies and Bearer tokens."
-            echo "- **30-Minute Background Polling & Push Alerts**: Sends high-priority notifications whenever a status or scrutiny remark changes."
-            echo "- **Status Diff Timeline, Raw JSON Inspector & Custom Report Exporter**: Inspect unmasked backend JSON fields, view status audit logs, and export CSV or Executive Text reports."
+            echo "- **Native In-App Login (CNIC & Password)**: Authenticates directly from the app using a headless background browser & API bridge."
+            echo "- **Smart Job Recommendations & In-App Apply**: Suggests open SJP jobs matched to your education, major, domicile, and age, with an Eligibility Match Breakdown & one-tap application submission."
+            echo "- **Hidden Backend Status Radar & 30-Min Poller**: Polls all pages of \`usr-svc.sjp.gos.pk/api/v2/candidates/application/getAllAppliedJobsByCandidate\` and sends push notifications on status transitions."
             echo ""
             echo "## Commits in This Release"
             echo "${COMMIT_LOG}"
@@ -147,37 +164,30 @@ jobs:
           echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
           echo "release_title=${RELEASE_TITLE}" >> "$GITHUB_OUTPUT"
           echo "beta_label=${BETA_LABEL}" >> "$GITHUB_OUTPUT"
-          cat release-notes.md
 
-      - name: Compile Android Application APK
-        run: gradle :app:assembleDebug --no-daemon --stacktrace
+      - name: Compile Production Release APK & Debug APK
+        run: gradle :app:assembleRelease :app:assembleDebug --no-daemon --stacktrace
 
-      - name: Compile Signed Release APK (If Release Keystore Configured)
-        if: env.HAS_RELEASE_KEYSTORE == 'true'
-        env:
-          KEYSTORE_PATH: ${{ github.workspace }}/my-upload-key.jks
-          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: gradle :app:assembleRelease --no-daemon --stacktrace
-
-      - name: Package Application APK & Source Code Archives
+      - name: Package Application APKs & Source Code Archives
         env:
           TAG_NAME: ${{ steps.meta.outputs.tag_name }}
         run: |
           mkdir -p release-assets
 
-          APK_PATH=$(find app/build/outputs/apk/debug -name "*.apk" | head -n 1)
-          if [ -z "$APK_PATH" ]; then
-            echo "Error: Debug APK was not found in app/build/outputs/apk/debug"
+          REL_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1 || true)
+          DBG_APK=$(find app/build/outputs/apk/debug -name "*.apk" | head -n 1 || true)
+
+          if [ -n "$REL_APK" ]; then
+            cp "$REL_APK" "release-assets/SJP-Pulse-${TAG_NAME}.apk"
+          elif [ -n "$DBG_APK" ]; then
+            cp "$DBG_APK" "release-assets/SJP-Pulse-${TAG_NAME}.apk"
+          else
+            echo "Error: No APK found in app/build/outputs/apk/"
             exit 1
           fi
-          cp "$APK_PATH" "release-assets/SJP-Pulse-${TAG_NAME}.apk"
 
-          if [ -d "app/build/outputs/apk/release" ]; then
-            REL_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1 || true)
-            if [ -n "$REL_APK" ]; then
-              cp "$REL_APK" "release-assets/SJP-Pulse-${TAG_NAME}-signed-release.apk"
-            fi
+          if [ -n "$DBG_APK" ]; then
+            cp "$DBG_APK" "release-assets/SJP-Pulse-${TAG_NAME}-debug.apk"
           fi
 
           git archive --format=zip --prefix="SJP-Pulse-${TAG_NAME}/" --output="release-assets/SJP-Pulse-${TAG_NAME}-source.zip" HEAD

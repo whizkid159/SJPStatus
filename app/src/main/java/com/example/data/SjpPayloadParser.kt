@@ -3,6 +3,7 @@ package com.example.data
 import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
@@ -17,39 +18,6 @@ object SjpPayloadParser {
         val currentPage: Int
     )
 
-    /**
-     * Parses the exact JSON schema returned by:
-     * https://usr-svc.sjp.gos.pk/api/v2/candidates/application/getAllAppliedJobsByCandidate?page=1&limit=10&keyword=
-     *
-     * Schema from user's Firefox bookmarklet:
-     * {
-     *   "data": {
-     *     "applications": [
-     *       {
-     *         "applicationId": ...,
-     *         "applicationStatus": "SHORTLISTED" | "REJECTED" | "OFFERED" | "WAITING" | ...,
-     *         "jobOffered": true | false,
-     *         "Offer": { ... } | null,
-     *         "reasonForRejected": "..." | null,
-     *         "Job": {
-     *           "jobTitle": "...",
-     *           "jobInterviewStatus": "...",
-     *           "Department": {
-     *             "departmentName": "..."
-     *           }
-     *         },
-     *         "ApplicationStatuses": [
-     *           { "status": "...", "changedAt": "..." }
-     *         ]
-     *       }
-     *     ],
-     *     "pagination": {
-     *       "total": 25,
-     *       "totalPages": 3
-     *     }
-     *   }
-     * }
-     */
     fun parseAppliedJobsJson(
         rawJsonText: String,
         existingJobsMap: Map<String, AppliedJobEntity> = emptyMap()
@@ -150,7 +118,6 @@ object SjpPayloadParser {
                 "reasonForRejected", "rejectionReason", "remarks", "scrutinyRemarks"
             ) ?: "—"
 
-            // Parse ApplicationStatuses array from z.ApplicationStatuses
             val histArray = z.optJSONArray("ApplicationStatuses")
                 ?: z.optJSONArray("applicationStatuses")
                 ?: JSONArray()
@@ -217,6 +184,218 @@ object SjpPayloadParser {
             totalPages = totalPages,
             currentPage = currentPage
         )
+    }
+
+    /**
+     * Parses open job listings from usr-svc.sjp.gos.pk (e.g., /api/v2/jobs, /api/v2/candidates/jobs)
+     */
+    fun parseOpenJobsJson(rawJsonText: String): List<OpenJobEntity> {
+        val trimmed = rawJsonText.trim()
+        if (trimmed.isEmpty()) return emptyList()
+
+        val jobsArray: JSONArray = when {
+            trimmed.startsWith("[") -> JSONArray(trimmed)
+            trimmed.startsWith("{") -> {
+                val root = JSONObject(trimmed)
+                val dataObj = root.optJSONObject("data") ?: root
+                dataObj.optJSONArray("jobs")
+                    ?: dataObj.optJSONArray("vacancies")
+                    ?: dataObj.optJSONArray("records")
+                    ?: dataObj.optJSONArray("items")
+                    ?: root.optJSONArray("data")
+                    ?: root.optJSONArray("jobs")
+                    ?: return emptyList()
+            }
+            else -> return emptyList()
+        }
+
+        val list = mutableListOf<OpenJobEntity>()
+        val now = System.currentTimeMillis()
+
+        for (i in 0 until jobsArray.length()) {
+            val item = jobsArray.optJSONObject(i) ?: continue
+            val deptObj = item.optJSONObject("Department")
+                ?: item.optJSONObject("department")
+
+            val jobId = extractString(item, "jobId", "id", "vacancyId", "postId")
+                ?: continue
+            val jobTitle = extractString(item, "jobTitle", "title", "postTitle", "designation", "name")
+                ?: "Government of Sindh Vacancy #$jobId"
+            val departmentName = extractString(deptObj, "departmentName", "name", "title")
+                ?: extractString(item, "departmentName", "department")
+                ?: "Government of Sindh Department"
+
+            val rawBps = extractString(item, "bps", "bpsScale", "grade", "scale") ?: "15"
+            val bpsScale = if (rawBps.uppercase().startsWith("BPS")) rawBps.uppercase() else "BPS-$rawBps"
+
+            val reqDegree = extractString(
+                item,
+                "qualification", "minQualification", "education", "degreeLevel", "requiredQualification", "requiredEducation"
+            ) ?: inferEducationFromBpsAndTitle(bpsScale, jobTitle)
+
+            val reqMajor = extractString(
+                item,
+                "major", "subject", "discipline", "fieldOfStudy", "specialization", "qualificationMajor"
+            ) ?: inferMajorFromTitle(jobTitle, departmentName)
+
+            val domicileQuota = extractString(
+                item,
+                "domicile", "quota", "districtQuota", "region", "domicileQuota"
+            ) ?: "Sindh Merit (Urban & Rural)"
+
+            val minAge = item.optInt("minAge", 18).coerceAtLeast(18)
+            val maxAge = item.optInt("maxAge", 35).coerceAtLeast(28)
+            val expYears = item.optInt("experience", item.optInt("minExperience", 0)).coerceAtLeast(0)
+            val totalPositions = item.optInt("noOfPosts", item.optInt("totalPositions", item.optInt("vacancies", 1))).coerceAtLeast(1)
+
+            val closingDate = extractString(
+                item,
+                "lastDate", "closingDate", "expiryDate", "deadline", "applyBefore", "endDate"
+            )?.take(10) ?: "Open"
+
+            val advNo = extractString(item, "advertisementNo", "advNo", "jobCode") ?: "SJP-ADV"
+            val description = extractString(item, "jobDescription", "description", "duties", "Summary")
+                ?: "Official recruitment post under $departmentName ($bpsScale)."
+
+            list.add(
+                OpenJobEntity(
+                    jobId = jobId,
+                    jobTitle = jobTitle,
+                    departmentName = departmentName,
+                    bpsScale = bpsScale,
+                    requiredDegreeLevel = reqDegree,
+                    requiredMajor = reqMajor,
+                    domicileQuota = domicileQuota,
+                    minAge = minAge,
+                    maxAge = maxAge,
+                    experienceRequiredYears = expYears,
+                    totalPositions = totalPositions,
+                    closingDate = closingDate,
+                    advertisementNo = advNo,
+                    jobDescription = description,
+                    rawJsonPayload = item.toString(2),
+                    fetchedAtTimestamp = now
+                )
+            )
+        }
+        return list
+    }
+
+    /**
+     * Parses candidate profile & academic qualifications from usr-svc.sjp.gos.pk
+     */
+    fun parseCandidateProfileJson(
+        rawJsonText: String,
+        existingProfile: CandidateProfile
+    ): CandidateProfile {
+        return try {
+            val root = JSONObject(rawJsonText)
+            val data = root.optJSONObject("data")
+                ?: root.optJSONObject("candidate")
+                ?: root.optJSONObject("user")
+                ?: root
+
+            val name = extractString(data, "fullName", "name", "candidateName", "firstName")
+                ?: existingProfile.fullName
+            val cnic = extractString(data, "cnic", "nic", "candidateCnic")
+                ?: existingProfile.cnic
+
+            val district = extractString(
+                data.optJSONObject("District") ?: data.optJSONObject("district") ?: data,
+                "districtName", "domicileDistrict", "district", "city"
+            ) ?: existingProfile.domicileDistrict
+
+            val quota = extractString(data, "domicileType", "domicileQuota", "urbanRural", "quota")
+                ?: existingProfile.domicileQuota
+
+            var age = existingProfile.ageYears
+            val dobRaw = extractString(data, "dateOfBirth", "dob", "birthDate")
+            if (!dobRaw.isNullOrBlank()) {
+                val dobMillis = parseIsoTimestamp(dobRaw)
+                if (dobMillis != null && dobMillis > 0L) {
+                    val dobCal = Calendar.getInstance().apply { timeInMillis = dobMillis }
+                    val nowCal = Calendar.getInstance()
+                    val computedAge = nowCal.get(Calendar.YEAR) - dobCal.get(Calendar.YEAR)
+                    if (computedAge in 18..65) age = computedAge
+                }
+            }
+
+            // Inspect educations / qualifications array if present
+            val eduArray = data.optJSONArray("CandidateEducations")
+                ?: data.optJSONArray("educations")
+                ?: data.optJSONArray("qualifications")
+                ?: data.optJSONArray("AcademicRecords")
+
+            var highestLevel = existingProfile.educationEnum
+            var detectedMajor = existingProfile.majorField
+
+            if (eduArray != null && eduArray.length() > 0) {
+                val majors = mutableListOf<String>()
+                for (i in 0 until eduArray.length()) {
+                    val eduObj = eduArray.optJSONObject(i) ?: continue
+                    val degStr = extractString(
+                        eduObj,
+                        "degreeTitle", "degreeLevel", "degreeName", "qualification", "level", "title"
+                    )
+                    if (!degStr.isNullOrBlank()) {
+                        val level = EducationLevel.fromString(degStr)
+                        if (level.rank >= highestLevel.rank) {
+                            highestLevel = level
+                        }
+                    }
+                    val majStr = extractString(
+                        eduObj,
+                        "majorSubject", "major", "subject", "discipline", "fieldOfStudy", "specialization"
+                    )
+                    if (!majStr.isNullOrBlank()) {
+                        majors.add(majStr)
+                    }
+                }
+                if (majors.isNotEmpty()) {
+                    detectedMajor = majors.distinct().joinToString(" / ")
+                }
+            }
+
+            existingProfile.copy(
+                fullName = name,
+                cnic = cnic,
+                highestDegreeLevel = highestLevel.label,
+                majorField = detectedMajor,
+                domicileDistrict = district,
+                domicileQuota = quota,
+                ageYears = age,
+                isSyncedFromPortal = true
+            )
+        } catch (_: Exception) {
+            existingProfile
+        }
+    }
+
+    /**
+     * Extracts open/eligible job opportunities from applied jobs' department & job metadata
+     * or live SJP job feed when browsing on sjp.gos.pk.
+     */
+    fun inferEducationFromBpsAndTitle(bpsScale: String, title: String): String {
+        val t = title.uppercase()
+        val bpsNum = bpsScale.filter { it.isDigit() }.toIntOrNull() ?: 15
+        return when {
+            t.contains("DIRECTOR") || bpsNum >= 17 -> EducationLevel.BACHELOR_16.label
+            bpsNum in 14..16 -> EducationLevel.BACHELOR_14.label
+            bpsNum in 11..13 || t.contains("ASSISTANT") || t.contains("CLERK") -> EducationLevel.INTERMEDIATE.label
+            else -> EducationLevel.MATRIC.label
+        }
+    }
+
+    fun inferMajorFromTitle(title: String, department: String): String {
+        val combined = "$title $department".uppercase()
+        return when {
+            combined.contains("IT") || combined.contains("COMPUTER") || combined.contains("SOFTWARE") || combined.contains("DATA") -> "Computer Science / IT / Software Engineering"
+            combined.contains("ACCOUNT") || combined.contains("FINANCE") || combined.contains("AUDIT") || combined.contains("TREASURY") -> "Commerce / Finance / BBA / Economics"
+            combined.contains("ENGINEER") -> "Engineering (PEC Registered)"
+            combined.contains("STATISTIC") || combined.contains("ECONOM") || combined.contains("PLANNING") -> "Economics / Statistics / Mathematics"
+            combined.contains("TEACHER") || combined.contains("EDUCATION") -> "Education / B.Ed / Relevant Subject"
+            else -> "Any Recognized Discipline (General / Arts / Science / IT)"
+        }
     }
 
     fun parseBackendHistoryJson(statusHistoryJson: String): List<SjpBackendStatusEntry> {
