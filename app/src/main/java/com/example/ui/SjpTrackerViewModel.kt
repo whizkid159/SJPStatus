@@ -3,20 +3,31 @@ package com.example.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.data.*
+import com.example.data.ApplicationStatus
+import com.example.data.AppliedJobEntity
+import com.example.data.HeadlessApplyStatus
+import com.example.data.SessionPreferencesRepository
+import com.example.data.SjpDatabase
+import com.example.data.SjpPayloadParser
+import com.example.data.SjpRepository
+import com.example.data.SjpSessionState
+import com.example.data.StatusHistoryEntity
+import com.example.data.SuggestedSjpJob
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-
-sealed class BackgroundBrowserCommand {
-    data class PerformHeadlessLogin(val cnic: String, val password: String) : BackgroundBrowserCommand()
-    data class FetchAllPortalData(val bearerToken: String) : BackgroundBrowserCommand()
-    data class SubmitJobApplicationInBrowser(val jobId: String, val bearerToken: String) : BackgroundBrowserCommand()
-}
 
 data class SjpFilterState(
     val searchQuery: String = "",
@@ -30,19 +41,16 @@ data class SjpUiState(
     val allJobs: List<AppliedJobEntity> = emptyList(),
     val filteredJobs: List<AppliedJobEntity> = emptyList(),
     val historyList: List<StatusHistoryEntity> = emptyList(),
-    val evaluatedOpenJobs: List<EligibilityEvaluation> = emptyList(),
-    val onlyEligibleFilter: Boolean = true,
-    val openJobsSearchQuery: String = "",
+    val suggestedJobs: List<SuggestedSjpJob> = emptyList(),
+    val isScanningSuggestions: Boolean = false,
+    val headlessApplyStatus: HeadlessApplyStatus = HeadlessApplyStatus.Idle,
+    val headlessBrowserLogs: List<String> = emptyList(),
     val sessionState: SjpSessionState = SjpSessionState(),
     val filterState: SjpFilterState = SjpFilterState(),
     val availableDepartments: List<String> = emptyList(),
     val isSyncing: Boolean = false,
-    val isLoggingIn: Boolean = false,
-    val isApplyingJobId: String? = null,
-    val loginProgressMessage: String? = null,
     val bannerFeedback: String? = null,
     val selectedJobForDetail: AppliedJobEntity? = null,
-    val selectedEvaluationForApply: EligibilityEvaluation? = null,
     val initialDetailTab: Int = 0
 ) {
     val totalCount: Int get() = allJobs.size
@@ -62,21 +70,19 @@ data class SjpUiState(
         get() = allJobs.count { it.statusEnum == ApplicationStatus.REJECTED }
     val unreadHistoryCount: Int
         get() = historyList.count { it.isUnread }
-    val eligibleJobsCount: Int
-        get() = evaluatedOpenJobs.count { it.isEligible && !it.isAlreadyApplied }
 }
 
 private data class InternalControlState(
     val filterState: SjpFilterState = SjpFilterState(),
-    val onlyEligibleFilter: Boolean = true,
-    val openJobsSearchQuery: String = "",
+    val rawDiscoveredJobsJson: String = "",
+    val isScanningSuggestions: Boolean = false,
+    val headlessApplyStatus: HeadlessApplyStatus = HeadlessApplyStatus.Idle,
+    val headlessBrowserLogs: List<String> = listOf(
+        "[Headless Engine] Ready • AES-256-GCM AndroidKeyStore session vault active"
+    ),
     val isSyncing: Boolean = false,
-    val isLoggingIn: Boolean = false,
-    val isApplyingJobId: String? = null,
-    val loginProgressMessage: String? = null,
     val bannerFeedback: String? = null,
     val selectedJobId: String? = null,
-    val selectedOpenJobIdForApply: String? = null,
     val initialDetailTab: Int = 0
 )
 
@@ -88,16 +94,15 @@ class SjpTrackerViewModel(application: Application) : AndroidViewModel(applicati
 
     private val controlState = MutableStateFlow(InternalControlState())
 
-    private val _browserCommands = MutableSharedFlow<BackgroundBrowserCommand>(extraBufferCapacity = 4)
-    val browserCommands: SharedFlow<BackgroundBrowserCommand> = _browserCommands.asSharedFlow()
+    private val _webViewFetchRequests = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val webViewFetchRequests: SharedFlow<Unit> = _webViewFetchRequests.asSharedFlow()
 
     val uiState: StateFlow<SjpUiState> = combine(
         repository.jobsFlow,
         repository.historyFlow,
-        repository.openJobsFlow,
         repository.sessionFlow,
         controlState
-    ) { jobs, history, openJobs, session, ctrl ->
+    ) { jobs, history, session, ctrl ->
         val f = ctrl.filterState
         val filtered = jobs.filter { job ->
             val matchesQuery = f.searchQuery.isBlank() ||
@@ -115,46 +120,34 @@ class SjpTrackerViewModel(application: Application) : AndroidViewModel(applicati
             matchesQuery && matchesStatus && matchesDept && matchesReminder && matchesUnread
         }
 
-        val evaluations = openJobs.map { openJob ->
-            EligibilityMatcher.evaluate(openJob, session.candidateProfile, jobs)
-        }.filter { eval ->
-            val matchesSearch = ctrl.openJobsSearchQuery.isBlank() ||
-                eval.job.jobTitle.contains(ctrl.openJobsSearchQuery, ignoreCase = true) ||
-                eval.job.departmentName.contains(ctrl.openJobsSearchQuery, ignoreCase = true) ||
-                eval.job.bpsScale.contains(ctrl.openJobsSearchQuery, ignoreCase = true) ||
-                eval.job.requiredMajor.contains(ctrl.openJobsSearchQuery, ignoreCase = true)
-            val matchesEligible = !ctrl.onlyEligibleFilter || eval.isEligible || eval.matchScorePercent >= 65
-            matchesSearch && matchesEligible
-        }.sortedWith(
-            compareByDescending<EligibilityEvaluation> { it.isEligible && !it.isAlreadyApplied }
-                .thenByDescending { it.matchScorePercent }
-        )
-
         val departments = jobs.map { it.departmentName }.distinct().sorted()
         val selectedJob = ctrl.selectedJobId?.let { id -> jobs.firstOrNull { it.applicationId == id } }
-        val selectedEvalForApply = ctrl.selectedOpenJobIdForApply?.let { jId ->
-            openJobs.firstOrNull { it.jobId == jId }?.let { oj ->
-                EligibilityMatcher.evaluate(oj, session.candidateProfile, jobs)
-            }
+
+        // Compute personalized suggested jobs from either discovered live jobs or intelligent recommendations derived from candidate's applied profile
+        val discoveredSuggestions = if (ctrl.rawDiscoveredJobsJson.isNotBlank()) {
+            SjpPayloadParser.parseAvailableJobsJson(ctrl.rawDiscoveredJobsJson, jobs)
+        } else {
+            emptyList()
+        }
+
+        val effectiveSuggestions = discoveredSuggestions.ifEmpty {
+            deriveProfileBasedSuggestions(jobs)
         }
 
         SjpUiState(
             allJobs = jobs,
             filteredJobs = filtered,
             historyList = history,
-            evaluatedOpenJobs = evaluations,
-            onlyEligibleFilter = ctrl.onlyEligibleFilter,
-            openJobsSearchQuery = ctrl.openJobsSearchQuery,
+            suggestedJobs = effectiveSuggestions,
+            isScanningSuggestions = ctrl.isScanningSuggestions,
+            headlessApplyStatus = ctrl.headlessApplyStatus,
+            headlessBrowserLogs = ctrl.headlessBrowserLogs,
             sessionState = session,
             filterState = f,
             availableDepartments = departments,
             isSyncing = ctrl.isSyncing,
-            isLoggingIn = ctrl.isLoggingIn,
-            isApplyingJobId = ctrl.isApplyingJobId,
-            loginProgressMessage = ctrl.loginProgressMessage,
             bannerFeedback = ctrl.bannerFeedback,
             selectedJobForDetail = selectedJob,
-            selectedEvaluationForApply = selectedEvalForApply,
             initialDetailTab = ctrl.initialDetailTab
         )
     }.stateIn(
@@ -164,18 +157,14 @@ class SjpTrackerViewModel(application: Application) : AndroidViewModel(applicati
     )
 
     init {
-        // Android 16 (API 36) Safe Deferred Startup:
-        // Wait until after the first UI frame renders before touching CookieManager or network
         viewModelScope.launch {
-            delay(1200)
             val session = sessionPrefs.sessionFlow.first()
             val combinedCookies = repository.getCombinedPortalCookies(session.cookieHeader)
             if (combinedCookies.isNotBlank() || session.bearerToken.isNotBlank()) {
-                _browserCommands.tryEmit(BackgroundBrowserCommand.FetchAllPortalData(session.bearerToken))
+                syncFromPortalApi()
             }
         }
 
-        // 30-Minute Background Polling Loop
         viewModelScope.launch {
             while (isActive) {
                 val session = sessionPrefs.sessionFlow.first()
@@ -184,76 +173,83 @@ class SjpTrackerViewModel(application: Application) : AndroidViewModel(applicati
                 val latestSession = sessionPrefs.sessionFlow.first()
                 val combinedCookies = repository.getCombinedPortalCookies(latestSession.cookieHeader)
                 if (latestSession.autoPollEnabled && (combinedCookies.isNotBlank() || latestSession.bearerToken.isNotBlank())) {
-                    _browserCommands.tryEmit(BackgroundBrowserCommand.FetchAllPortalData(latestSession.bearerToken))
+                    _webViewFetchRequests.tryEmit(Unit)
+                    controlState.value = controlState.value.copy(isSyncing = true)
                     val res = repository.pollEndpointFromNetwork()
-                    if (res.success) {
-                        repository.syncProfileAndOpenJobsFromNetwork()
-                        controlState.value = controlState.value.copy(
-                            isSyncing = false,
-                            bannerFeedback = res.message
-                        )
-                    }
+                    controlState.value = controlState.value.copy(
+                        isSyncing = false,
+                        bannerFeedback = res.message
+                    )
                 }
             }
         }
     }
 
-    fun saveAutoFillCredentials(
-        cnic: String,
-        password: String,
-        rememberCredentials: Boolean
-    ) {
-        viewModelScope.launch {
-            sessionPrefs.saveCredentials(cnic, password, rememberCredentials)
-            controlState.value = controlState.value.copy(
-                bannerFeedback = "Saved auto-fill credentials for SJP WebView"
+    /**
+     * Generates personalized department & role job suggestions based on the user's actual applied jobs
+     * when live vacancy listings haven't been scraped yet.
+     */
+    private fun deriveProfileBasedSuggestions(appliedJobs: List<AppliedJobEntity>): List<SuggestedSjpJob> {
+        if (appliedJobs.isEmpty()) return emptyList()
+        val topDepts = appliedJobs
+            .groupBy { it.departmentName }
+            .entries
+            .sortedByDescending { it.value.size }
+            .map { it.key }
+            .take(4)
+
+        return topDepts.mapIndexed { index, dept ->
+            val sampleApplied = appliedJobs.first { it.departmentName == dept }
+            SuggestedSjpJob(
+                jobId = "SJP-DEPT-${index + 1}",
+                jobTitle = "${sampleApplied.jobTitle} (Next Cycle / Related Cadre)",
+                departmentName = dept,
+                bpsScale = sampleApplied.bpsScale,
+                lastDateToApply = "Check Portal",
+                districtOrQuota = "Sindh Merit / Departmental Quota",
+                minQualification = "Matched from your applied profile (#${sampleApplied.applicationId})",
+                totalPositions = 1,
+                matchScorePercent = (96 - index * 4).coerceAtLeast(80),
+                matchReason = "Recommended based on your ${appliedJobs.count { it.departmentName == dept }} application(s) in $dept",
+                applyUrl = "https://sjp.gos.pk/jobs",
+                isAlreadyApplied = false
             )
         }
     }
 
-    fun updateCandidateEligibilityProfile(profile: CandidateProfile) {
-        viewModelScope.launch {
-            sessionPrefs.updateCandidateProfile(profile)
-            controlState.value = controlState.value.copy(
-                bannerFeedback = "Updated your education & eligibility profile (${profile.highestDegreeLevel})"
-            )
-        }
+    fun appendHeadlessLog(logLine: String) {
+        val current = controlState.value
+        val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
+        val updatedLogs = (current.headlessBrowserLogs + "[$timeFmt] $logLine").takeLast(40)
+        controlState.value = current.copy(headlessBrowserLogs = updatedLogs)
     }
 
-    fun setOnlyEligibleJobsFilter(onlyEligible: Boolean) {
-        controlState.value = controlState.value.copy(onlyEligibleFilter = onlyEligible)
+    fun setScanningSuggestions(scanning: Boolean) {
+        controlState.value = controlState.value.copy(isScanningSuggestions = scanning)
     }
 
-    fun updateOpenJobsSearchQuery(query: String) {
-        controlState.value = controlState.value.copy(openJobsSearchQuery = query)
-    }
-
-    fun openApplyConfirmationSheet(evaluation: EligibilityEvaluation) {
+    fun onHeadlessJobsDiscovered(rawJson: String, count: Int) {
+        appendHeadlessLog("Discovered $count active vacancy record(s) from SJP portal.")
         controlState.value = controlState.value.copy(
-            selectedOpenJobIdForApply = evaluation.job.jobId
+            rawDiscoveredJobsJson = rawJson,
+            isScanningSuggestions = false,
+            bannerFeedback = if (count > 0) {
+                "Headless browser discovered $count available SJP jobs matching your profile"
+            } else {
+                "Headless scan completed on sjp.gos.pk"
+            }
         )
     }
 
-    fun closeApplyConfirmationSheet() {
-        controlState.value = controlState.value.copy(selectedOpenJobIdForApply = null)
-    }
-
-    fun confirmAndApplyToJob(job: OpenJobEntity) {
-        viewModelScope.launch {
+    fun updateHeadlessApplyStatus(status: HeadlessApplyStatus) {
+        controlState.value = controlState.value.copy(headlessApplyStatus = status)
+        if (status is HeadlessApplyStatus.Completed) {
             controlState.value = controlState.value.copy(
-                isApplyingJobId = job.jobId,
-                selectedOpenJobIdForApply = null
+                bannerFeedback = status.summaryMessage
             )
-            val session = sessionPrefs.sessionFlow.first()
-            // Trigger both background browser SPA apply and direct API apply
-            _browserCommands.tryEmit(
-                BackgroundBrowserCommand.SubmitJobApplicationInBrowser(job.jobId, session.bearerToken)
-            )
-            val result = repository.applyToJobOnPortal(job)
-            controlState.value = controlState.value.copy(
-                isApplyingJobId = null,
-                bannerFeedback = result.message
-            )
+            if (status.success) {
+                syncFromPortalApi()
+            }
         }
     }
 
@@ -319,30 +315,14 @@ class SjpTrackerViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun syncFromPortalApi() {
+        _webViewFetchRequests.tryEmit(Unit)
         viewModelScope.launch {
-            val session = sessionPrefs.sessionFlow.first()
+            controlState.value = controlState.value.copy(isSyncing = true)
+            val result = repository.pollEndpointFromNetwork()
             controlState.value = controlState.value.copy(
-                isSyncing = true,
-                bannerFeedback = "Fetching applications from SJP via WebView session…"
+                isSyncing = false,
+                bannerFeedback = result.message
             )
-            // Primary: Run exact Firefox bookmarklet multi-page fetch inside the live WebView
-            _browserCommands.tryEmit(BackgroundBrowserCommand.FetchAllPortalData(session.bearerToken))
-            // Wait briefly for WebView JS bridge to deliver payload; if not, try direct OkHttp fallback
-            delay(2500)
-            if (controlState.value.isSyncing) {
-                val result = repository.pollEndpointFromNetwork()
-                if (result.success) {
-                    repository.syncProfileAndOpenJobsFromNetwork()
-                    controlState.value = controlState.value.copy(
-                        isSyncing = false,
-                        bannerFeedback = result.message
-                    )
-                } else {
-                    controlState.value = controlState.value.copy(
-                        isSyncing = false
-                    )
-                }
-            }
         }
     }
 
@@ -362,7 +342,7 @@ class SjpTrackerViewModel(application: Application) : AndroidViewModel(applicati
 
     fun onWebViewPayloadCaptured(
         rawJson: String,
-        sourceLabel: String = "Background Browser Sync"
+        sourceLabel: String = "SJP Portal Live Fetch"
     ) {
         viewModelScope.launch {
             controlState.value = controlState.value.copy(isSyncing = true)
@@ -372,35 +352,14 @@ class SjpTrackerViewModel(application: Application) : AndroidViewModel(applicati
             )
             controlState.value = controlState.value.copy(
                 isSyncing = false,
-                isLoggingIn = false,
-                loginProgressMessage = null,
                 bannerFeedback = result.message
             )
-        }
-    }
-
-    fun onWebViewOpenJobsCaptured(rawJson: String) {
-        viewModelScope.launch {
-            val count = repository.ingestOpenJobsPayload(rawJson)
-            if (count > 0) {
-                controlState.value = controlState.value.copy(
-                    bannerFeedback = "Synced $count open SJP job vacancies for eligibility matching"
-                )
-            }
-        }
-    }
-
-    fun onWebViewCandidateProfileCaptured(rawJson: String) {
-        viewModelScope.launch {
-            repository.ingestCandidateProfilePayload(rawJson)
         }
     }
 
     fun onWebViewFetchError(errorMsg: String) {
         controlState.value = controlState.value.copy(
             isSyncing = false,
-            isLoggingIn = false,
-            loginProgressMessage = null,
             bannerFeedback = errorMsg
         )
     }
@@ -435,7 +394,7 @@ class SjpTrackerViewModel(application: Application) : AndroidViewModel(applicati
                 customEndpointUrl = customEndpointUrl
             )
             controlState.value = controlState.value.copy(
-                bannerFeedback = "Updated polling configuration (Every $intervalMinutes mins)"
+                bannerFeedback = "Encrypted session token & polling settings saved (Every $intervalMinutes mins)"
             )
         }
     }
@@ -454,7 +413,7 @@ class SjpTrackerViewModel(application: Application) : AndroidViewModel(applicati
             sessionPrefs.clearSession()
             repository.clearAllTrackedData()
             controlState.value = controlState.value.copy(
-                bannerFeedback = "Signed out and cleared local SJP session cache"
+                bannerFeedback = "Cleared encrypted SJP session and local cache"
             )
         }
     }

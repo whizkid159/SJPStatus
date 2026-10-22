@@ -2,7 +2,6 @@ package com.example
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -10,18 +9,19 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Analytics
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Language
-import androidx.compose.material.icons.filled.Work
 import androidx.compose.material.icons.outlined.Analytics
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Language
-import androidx.compose.material.icons.outlined.WorkOutline
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.data.AndroidCompatHelper
 import com.example.data.SjpNotificationHelper
 import com.example.ui.*
 import com.example.ui.theme.MyApplicationTheme
@@ -44,19 +45,23 @@ enum class SjpDestination(
     val unselectedIcon: ImageVector
 ) {
     DASHBOARD("dashboard", "Applied", Icons.Filled.Dashboard, Icons.Outlined.Dashboard),
-    RECOMMENDATIONS("jobs", "Jobs For You", Icons.Filled.Work, Icons.Outlined.WorkOutline),
+    SUGGESTIONS("suggestions", "Auto-Apply", Icons.Filled.AutoAwesome, Icons.Outlined.AutoAwesome),
     TIMELINE("timeline", "History", Icons.Filled.History, Icons.Outlined.History),
-    ANALYTICS("analytics", "Reports", Icons.Filled.Analytics, Icons.Outlined.Analytics),
-    PORTAL("portal", "Portal", Icons.Filled.Language, Icons.Outlined.Language)
+    ANALYTICS("analytics", "Analytics", Icons.Filled.Analytics, Icons.Outlined.Analytics),
+    PORTAL("portal", "SJP Login", Icons.Filled.Language, Icons.Outlined.Language)
 }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        runCatching { SjpNotificationHelper.ensureChannelCreated(this) }
+        SjpNotificationHelper.ensureChannelCreated(this)
         enableEdgeToEdge()
         setContent {
-            MyApplicationTheme {
+            val isDark = isSystemInDarkTheme()
+            LaunchedEffect(isDark) {
+                AndroidCompatHelper.configureSystemBars(this@MainActivity, isDark)
+            }
+            MyApplicationTheme(darkTheme = isDark) {
                 SjpPulseApp()
             }
         }
@@ -76,15 +81,13 @@ fun SjpPulseApp(
     ) { _ -> }
 
     LaunchedEffect(Unit) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            runCatching {
-                val granted = ContextCompat.checkSelfPermission(
-                    context,
-                    Manifest.permission.POST_NOTIFICATIONS
-                ) == PackageManager.PERMISSION_GRANTED
-                if (!granted) {
-                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                }
+        if (AndroidCompatHelper.requiresRuntimeNotificationPermission()) {
+            val granted = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
             }
         }
     }
@@ -116,8 +119,6 @@ fun SjpPulseApp(
                                         badge = {
                                             if (dest == SjpDestination.TIMELINE && uiState.unreadHistoryCount > 0) {
                                                 Badge { Text(uiState.unreadHistoryCount.toString()) }
-                                            } else if (dest == SjpDestination.RECOMMENDATIONS && uiState.eligibleJobsCount > 0) {
-                                                Badge { Text(uiState.eligibleJobsCount.toString()) }
                                             }
                                         }
                                     ) {
@@ -155,8 +156,6 @@ fun SjpPulseApp(
                                         badge = {
                                             if (dest == SjpDestination.TIMELINE && uiState.unreadHistoryCount > 0) {
                                                 Badge { Text(uiState.unreadHistoryCount.toString()) }
-                                            } else if (dest == SjpDestination.RECOMMENDATIONS && uiState.eligibleJobsCount > 0) {
-                                                Badge { Text(uiState.eligibleJobsCount.toString()) }
                                             }
                                         }
                                     ) {
@@ -174,35 +173,6 @@ fun SjpPulseApp(
                 }
 
                 Box(modifier = Modifier.weight(1f)) {
-                    // Keep PortalWebViewScreen persistently mounted in the composition tree!
-                    // When currentTab == PORTAL, it occupies the full screen so the user can interact
-                    // with sjp.gos.pk directly. When on other tabs, it shrinks to 0.dp so the logged-in
-                    // WebView instance and its cookies/session are NEVER destroyed.
-                    PortalWebViewScreen(
-                        uiState = uiState,
-                        browserCommands = viewModel.browserCommands,
-                        onSessionCaptured = { token, cookies ->
-                            viewModel.onWebViewSessionCaptured(token, cookies)
-                        },
-                        onPayloadCaptured = { json, source ->
-                            viewModel.onWebViewPayloadCaptured(json, source)
-                        },
-                        onOpenJobsCaptured = viewModel::onWebViewOpenJobsCaptured,
-                        onProfileCaptured = viewModel::onWebViewCandidateProfileCaptured,
-                        onFetchError = viewModel::onWebViewFetchError,
-                        onSaveCredentials = viewModel::saveAutoFillCredentials,
-                        onSaveConfig = viewModel::savePollingAndTokenConfig,
-                        onClearSession = viewModel::clearSessionAndData,
-                        onNavigateToDashboard = {
-                            currentTab = SjpDestination.DASHBOARD
-                        },
-                        modifier = if (currentTab == SjpDestination.PORTAL) {
-                            Modifier.fillMaxSize()
-                        } else {
-                            Modifier.size(0.dp)
-                        }
-                    )
-
                     when (currentTab) {
                         SjpDestination.DASHBOARD -> DashboardScreen(
                             uiState = uiState,
@@ -217,14 +187,13 @@ fun SjpPulseApp(
                             onDismissBanner = viewModel::dismissBannerFeedback
                         )
 
-                        SjpDestination.RECOMMENDATIONS -> JobRecommendationsScreen(
+                        SjpDestination.SUGGESTIONS -> SuggestedJobsScreen(
                             uiState = uiState,
-                            onSyncJobs = viewModel::syncFromPortalApi,
-                            onUpdateProfile = viewModel::updateCandidateEligibilityProfile,
-                            onToggleOnlyEligible = viewModel::setOnlyEligibleJobsFilter,
-                            onSearchQueryChange = viewModel::updateOpenJobsSearchQuery,
-                            onSelectJobForApply = viewModel::openApplyConfirmationSheet,
-                            onOpenLoginTab = { currentTab = SjpDestination.PORTAL }
+                            onLogStep = viewModel::appendHeadlessLog,
+                            onSetScanning = viewModel::setScanningSuggestions,
+                            onJobsDiscovered = viewModel::onHeadlessJobsDiscovered,
+                            onUpdateApplyStatus = viewModel::updateHeadlessApplyStatus,
+                            onOpenPortalLogin = { currentTab = SjpDestination.PORTAL }
                         )
 
                         SjpDestination.TIMELINE -> TimelineScreen(
@@ -240,16 +209,28 @@ fun SjpPulseApp(
                             onGenerateTextReport = viewModel::buildExecutiveTextReport
                         )
 
-                        SjpDestination.PORTAL -> {
-                            // PortalWebViewScreen is already rendered at Modifier.fillMaxSize() above
-                        }
+                        SjpDestination.PORTAL -> PortalWebViewScreen(
+                            sessionState = uiState.sessionState,
+                            webViewFetchRequests = viewModel.webViewFetchRequests,
+                            onSessionCaptured = { token, cookies ->
+                                viewModel.onWebViewSessionCaptured(token, cookies)
+                            },
+                            onPayloadCaptured = { json, source ->
+                                viewModel.onWebViewPayloadCaptured(json, source)
+                            },
+                            onFetchError = viewModel::onWebViewFetchError,
+                            onSaveConfig = viewModel::savePollingAndTokenConfig,
+                            onClearSession = viewModel::clearSessionAndData,
+                            onNavigateToDashboard = {
+                                currentTab = SjpDestination.DASHBOARD
+                            }
+                        )
                     }
                 }
             }
         }
     }
 
-    // Modal Bottom Sheet for Applied Job Details & Raw JSON
     uiState.selectedJobForDetail?.let { selectedJob ->
         val jobHistory = remember(uiState.historyList, selectedJob.applicationId) {
             uiState.historyList.filter { it.applicationId == selectedJob.applicationId }
@@ -261,17 +242,6 @@ fun SjpPulseApp(
             onDismiss = viewModel::closeJobDetail,
             onSaveNotesAndReminder = { notes, interviewTs ->
                 viewModel.saveJobNotesAndInterview(selectedJob.applicationId, notes, interviewTs)
-            }
-        )
-    }
-
-    // Modal Bottom Sheet for Eligibility Breakdown & One-Tap In-App Job Application
-    uiState.selectedEvaluationForApply?.let { evaluation ->
-        EligibilityAndApplyBottomSheet(
-            evaluation = evaluation,
-            onDismiss = viewModel::closeApplyConfirmationSheet,
-            onConfirmApply = {
-                viewModel.confirmAndApplyToJob(evaluation.job)
             }
         )
     }
