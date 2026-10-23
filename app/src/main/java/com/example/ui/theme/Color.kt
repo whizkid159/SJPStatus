@@ -36,49 +36,55 @@ val StatusTempOfferedFg = Color(0xFF0F766E)
 val StatusTempOfferedDarkBg = Color(0xFF134E4A)
 val StatusTempOfferedDarkFg = Color(0xFF5EEAD4)
 
-// 3. SHORTLISTED
+// 3. INTERVIEW (Dedicated Cyan / Sky Palette)
+val StatusInterviewBg = Color(0xFFE0F2FE)
+val StatusInterviewFg = Color(0xFF0369A1)
+val StatusInterviewDarkBg = Color(0xFF0C4A6E)
+val StatusInterviewDarkFg = Color(0xFF7DD3FC)
+
+// 4. SHORTLISTED
 val StatusShortlistedBg = Color(0xFFDBEAFE)
 val StatusShortlistedFg = Color(0xFF1D4ED8)
 val StatusShortlistedDarkBg = Color(0xFF1E3A8A)
 val StatusShortlistedDarkFg = Color(0xFF93C5FD)
 
-// 4. TEMP_SHORTLISTED
+// 5. TEMP_SHORTLISTED
 val StatusTempShortlistedBg = Color(0xFFE0E7FF)
 val StatusTempShortlistedFg = Color(0xFF4338CA)
 val StatusTempShortlistedDarkBg = Color(0xFF312E81)
 val StatusTempShortlistedDarkFg = Color(0xFFA5B4FC)
 
-// 5. WAITING
+// 6. WAITING
 val StatusWaitingBg = Color(0xFFFEF3C7)
 val StatusWaitingFg = Color(0xFFB45309)
 val StatusWaitingDarkBg = Color(0xFF78350F)
 val StatusWaitingDarkFg = Color(0xFFFCD34D)
 
-// 6. TEMP_WAITING
+// 7. TEMP_WAITING
 val StatusTempWaitingBg = Color(0xFFFFEDD5)
 val StatusTempWaitingFg = Color(0xFFC2410C)
 val StatusTempWaitingDarkBg = Color(0xFF7C2D12)
 val StatusTempWaitingDarkFg = Color(0xFFFDBA74)
 
-// 7. UNDER_SCRUTINY
+// 8. UNDER_SCRUTINY
 val StatusScrutinyBg = Color(0xFFEDE9FE)
 val StatusScrutinyFg = Color(0xFF6D28D9)
 val StatusScrutinyDarkBg = Color(0xFF4C1D95)
 val StatusScrutinyDarkFg = Color(0xFFC4B5FD)
 
-// 8. APPLIED
+// 9. APPLIED
 val StatusAppliedBg = Color(0xFFE2E8F0)
 val StatusAppliedFg = Color(0xFF334155)
 val StatusAppliedDarkBg = Color(0xFF1E293B)
 val StatusAppliedDarkFg = Color(0xFFCBD5E1)
 
-// 9. TEMP_REJECTED
+// 10. TEMP_REJECTED
 val StatusTempRejectedBg = Color(0xFFFCE7F3)
 val StatusTempRejectedFg = Color(0xFFBE185D)
 val StatusTempRejectedDarkBg = Color(0xFF831843)
 val StatusTempRejectedDarkFg = Color(0xFFF9A8D4)
 
-// 10. REJECTED
+// 11. REJECTED
 val StatusRejectedBg = Color(0xFFFEE2E2)
 val StatusRejectedFg = Color(0xFFB91C1C)
 val StatusRejectedDarkBg = Color(0xFF7F1D1D)

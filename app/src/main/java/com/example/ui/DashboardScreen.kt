@@ -148,8 +148,8 @@ fun DashboardScreen(
         }
 
         // 3. Interactive Clickable KPI Status Bento Dashboard
-        // Includes Total Applications, Shortlisted, Temp Shortlisted, Waiting, Temp Waiting,
-        // Offered, Temp Offered, Temp Rejected, Rejected, Under Scrutiny, and Applied!
+        // Includes Total Applications, Offered, Temp Offered, Interview, Shortlisted,
+        // Temp Shortlisted, Waiting, Temp Waiting, Temp Rejected, Rejected, Under Scrutiny, and Applied!
         item {
             InteractiveStatusKpiDashboard(
                 uiState = uiState,
@@ -159,6 +159,7 @@ fun DashboardScreen(
         }
 
         // 4. Unified Search & Modern Dropdown Filter Command Hub
+        // ("Updated Only" and "Has Countdown" buttons removed as requested)
         item {
             ModernSearchAndFilterHub(
                 uiState = uiState,
@@ -166,8 +167,6 @@ fun DashboardScreen(
                 onSearchQueryChange = onSearchQueryChange,
                 onStatusFilterSelect = onStatusFilterSelect,
                 onDepartmentFilterSelect = onDepartmentFilterSelect,
-                onToggleRemindersFilter = onToggleRemindersFilter,
-                onToggleUnreadFilter = onToggleUnreadFilter,
                 onClearFilters = onClearFilters
             )
         }
@@ -497,8 +496,8 @@ private fun HeroTelemetryCard(
 
 /**
  * Interactive Clickable Status KPI Dashboard:
- * Shows Total Applications plus Shortlisted, Temp Shortlisted, Waiting, Temp Waiting,
- * Offered, Temp Offered, Temp Rejected, Rejected, Under Scrutiny, and Applied.
+ * Shows Total Applications plus Offered, Temp Offered, Interview, Shortlisted,
+ * Temp Shortlisted, Waiting, Temp Waiting, Temp Rejected, Rejected, Under Scrutiny, and Applied.
  * Touching any tab immediately filters and displays the matching applications!
  */
 @Composable
@@ -510,11 +509,11 @@ private fun InteractiveStatusKpiDashboard(
     val selectedStatus = uiState.filterState.selectedStatus
     val isAllSelected = selectedStatus == null
 
-    // Primary 8 status tabs always shown in the sleek 4x2 Bento Grid + optional toggle for Scrutiny/Applied
-    val primaryGridStatuses = remember {
+    val allGridStatuses = remember {
         listOf(
             ApplicationStatus.OFFERED,
             ApplicationStatus.TEMP_OFFERED,
+            ApplicationStatus.INTERVIEW,
             ApplicationStatus.SHORTLISTED,
             ApplicationStatus.TEMP_SHORTLISTED,
             ApplicationStatus.WAITING,
@@ -545,7 +544,7 @@ private fun InteractiveStatusKpiDashboard(
             .padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        // 1. Top Full-Width "Total Applications" Interactive Banner Card (Tap to show all 81 applications)
+        // 1. Top Full-Width "Total Applications" Interactive Banner Card (Tap to show all applications)
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
@@ -633,9 +632,8 @@ private fun InteractiveStatusKpiDashboard(
             }
         }
 
-        // 2. Interactive Clickable Bento Grid of All Dedicated Statuses
-        // (Offered, Temp Offered, Shortlisted, Temp Shortlisted, Waiting, Temp Waiting, Temp Rejected, Rejected, Under Scrutiny, Applied)
-        for (rowItems in primaryGridStatuses.chunked(2)) {
+        // 2. Interactive Clickable Bento Grid of All Dedicated Statuses (including dedicated Interview & Shortlisted tabs)
+        for (rowItems in allGridStatuses.chunked(2)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -773,8 +771,6 @@ private fun ModernSearchAndFilterHub(
     onSearchQueryChange: (String) -> Unit,
     onStatusFilterSelect: (ApplicationStatus?) -> Unit,
     onDepartmentFilterSelect: (String?) -> Unit,
-    onToggleRemindersFilter: () -> Unit,
-    onToggleUnreadFilter: () -> Unit,
     onClearFilters: () -> Unit
 ) {
     val filterState = uiState.filterState
@@ -791,6 +787,7 @@ private fun ModernSearchAndFilterHub(
         listOf(
             ApplicationStatus.OFFERED,
             ApplicationStatus.TEMP_OFFERED,
+            ApplicationStatus.INTERVIEW,
             ApplicationStatus.SHORTLISTED,
             ApplicationStatus.TEMP_SHORTLISTED,
             ApplicationStatus.WAITING,
@@ -804,8 +801,6 @@ private fun ModernSearchAndFilterHub(
 
     val hasAnyActiveFilter = filterState.selectedStatus != null ||
         filterState.selectedDepartment != null ||
-        filterState.onlyUnreadChanges ||
-        filterState.onlyWithReminders ||
         filterState.searchQuery.isNotBlank()
 
     Surface(
@@ -1253,47 +1248,18 @@ private fun ModernSearchAndFilterHub(
                 }
             }
 
-            // 4. Compact Quick-Toggle Strip (Updated Only, Interview Countdown, Reset)
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                FilterChip(
-                    selected = filterState.onlyUnreadChanges,
-                    onClick = onToggleUnreadFilter,
-                    label = { Text("Updated Only", maxLines = 1) },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = Icons.Default.Bolt,
-                            contentDescription = null,
-                            modifier = Modifier.size(15.dp)
-                        )
-                    }
-                )
-
-                FilterChip(
-                    selected = filterState.onlyWithReminders,
-                    onClick = onToggleRemindersFilter,
-                    label = { Text("Has Countdown", maxLines = 1) },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = Icons.Outlined.Event,
-                            contentDescription = null,
-                            modifier = Modifier.size(15.dp)
-                        )
-                    }
-                )
-
-                Spacer(modifier = Modifier.weight(1f))
-
-                AnimatedVisibility(visible = hasAnyActiveFilter) {
+            // 4. Animated Reset Button (only visible when a filter or search is active)
+            AnimatedVisibility(visible = hasAnyActiveFilter) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
                     TextButton(
                         onClick = {
                             onClearFilters()
                             isStatusMenuExpanded = false
                         },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                         modifier = Modifier.testTag("clear_all_filters_button")
                     ) {
                         Icon(
@@ -1302,7 +1268,7 @@ private fun ModernSearchAndFilterHub(
                             modifier = Modifier.size(16.dp)
                         )
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Show All", style = MaterialTheme.typography.labelMedium)
+                        Text("Reset Filters & Show All", style = MaterialTheme.typography.labelMedium)
                     }
                 }
             }
@@ -1415,7 +1381,13 @@ fun AppliedJobCard(
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = job.rawStatusString,
+                                text = if (job.statusEnum == ApplicationStatus.INTERVIEW &&
+                                    !job.rawStatusString.uppercase().contains("INTERVIEW")
+                                ) {
+                                    "INTERVIEW (${job.jobInterviewStatus})"
+                                } else {
+                                    job.rawStatusString
+                                },
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = badgeFg

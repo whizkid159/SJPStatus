@@ -32,15 +32,36 @@ data class AppliedJobEntity(
     val hasUnreadChange: Boolean = false
 ) {
     /**
-     * Always derive statusEnum from rawStatusString first so dedicated statuses
-     * (TEMP_SHORTLISTED, TEMP_REJECTED, TEMP_WAITING, WAITING, TEMP_OFFERED)
-     * work immediately even on previously cached Room rows.
+     * Resolves the dedicated status category:
+     * - If a job is marked SHORTLISTED (or TEMP_SHORTLISTED) on SJP, but its `jobInterviewStatus`
+     *   shows that an interview is SCHEDULED or CONDUCTED, it belongs in the dedicated INTERVIEW tab
+     *   so the Shortlisted tab only shows purely shortlisted jobs.
      */
     val statusEnum: ApplicationStatus
-        get() = if (rawStatusString.isNotBlank()) {
-            ApplicationStatus.fromRawStatus(rawStatusString)
-        } else {
-            ApplicationStatus.fromCode(normalizedStatusCode)
+        get() {
+            val base = if (rawStatusString.isNotBlank()) {
+                ApplicationStatus.fromRawStatus(rawStatusString)
+            } else {
+                ApplicationStatus.fromCode(normalizedStatusCode)
+            }
+            if (base == ApplicationStatus.SHORTLISTED || base == ApplicationStatus.TEMP_SHORTLISTED) {
+                val interviewUpper = jobInterviewStatus.trim().uppercase()
+                val hasActiveInterview = interviewUpper.contains("SCHEDULE") ||
+                    interviewUpper.contains("CONDUCT") ||
+                    (interviewUpper.isNotBlank() &&
+                        interviewUpper != "—" &&
+                        interviewUpper != "-" &&
+                        interviewUpper != "NONE" &&
+                        interviewUpper != "NO" &&
+                        interviewUpper != "N/A" &&
+                        interviewUpper != "NULL" &&
+                        !interviewUpper.contains("NOT") &&
+                        !interviewUpper.contains("PENDING"))
+                if (hasActiveInterview) {
+                    return ApplicationStatus.INTERVIEW
+                }
+            }
+            return base
         }
 }
 

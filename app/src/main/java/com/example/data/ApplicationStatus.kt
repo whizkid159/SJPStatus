@@ -15,20 +15,27 @@ enum class ApplicationStatus(
         displayLabel = "Offered / Joined",
         shortLabel = "Offered",
         description = "Job offered or joined on Sindh Job Portal",
-        funnelOrder = 9
+        funnelOrder = 10
     ),
     TEMP_OFFERED(
         code = "TEMP_OFFERED",
         displayLabel = "Temp Offered",
         shortLabel = "Temp Offered",
         description = "Temporarily or provisionally offered in SJP backend",
+        funnelOrder = 9
+    ),
+    INTERVIEW(
+        code = "INTERVIEW",
+        displayLabel = "Interview",
+        shortLabel = "Interview",
+        description = "Interview scheduled or conducted",
         funnelOrder = 8
     ),
     SHORTLISTED(
         code = "SHORTLISTED",
         displayLabel = "Shortlisted",
         shortLabel = "Shortlisted",
-        description = "Shortlisted or qualified for interview",
+        description = "Shortlisted (awaiting interview schedule)",
         funnelOrder = 7
     ),
     TEMP_SHORTLISTED(
@@ -85,6 +92,7 @@ enum class ApplicationStatus(
         return when (this) {
             OFFERED -> if (isDark) StatusOfferedDarkBg to StatusOfferedDarkFg else StatusOfferedBg to StatusOfferedFg
             TEMP_OFFERED -> if (isDark) StatusTempOfferedDarkBg to StatusTempOfferedDarkFg else StatusTempOfferedBg to StatusTempOfferedFg
+            INTERVIEW -> if (isDark) StatusInterviewDarkBg to StatusInterviewDarkFg else StatusInterviewBg to StatusInterviewFg
             SHORTLISTED -> if (isDark) StatusShortlistedDarkBg to StatusShortlistedDarkFg else StatusShortlistedBg to StatusShortlistedFg
             TEMP_SHORTLISTED -> if (isDark) StatusTempShortlistedDarkBg to StatusTempShortlistedDarkFg else StatusTempShortlistedBg to StatusTempShortlistedFg
             WAITING -> if (isDark) StatusWaitingDarkBg to StatusWaitingDarkFg else StatusWaitingBg to StatusWaitingFg
@@ -110,8 +118,9 @@ enum class ApplicationStatus(
                 normalized.contains("OFFER") || normalized.contains("JOINED") || normalized.contains("SELECTED") || normalized.contains("APPOINTED") -> OFFERED
                 isTemp && normalized.contains("WAIT") -> TEMP_WAITING
                 normalized.contains("WAIT") -> WAITING
-                isTemp && (normalized.contains("SHORTLIST") || normalized.contains("INTERVIEW") || normalized.contains("QUALIF")) -> TEMP_SHORTLISTED
-                normalized.contains("SHORTLIST") || normalized.contains("INTERVIEW") || normalized.contains("QUALIF") -> SHORTLISTED
+                normalized.contains("INTERVIEW") -> INTERVIEW
+                isTemp && (normalized.contains("SHORTLIST") || normalized.contains("QUALIF")) -> TEMP_SHORTLISTED
+                normalized.contains("SHORTLIST") || normalized.contains("QUALIF") -> SHORTLISTED
                 normalized.contains("SCRUTIN") || normalized.contains("REVIEW") || normalized.contains("VERIF") -> UNDER_SCRUTINY
                 else -> APPLIED
             }
