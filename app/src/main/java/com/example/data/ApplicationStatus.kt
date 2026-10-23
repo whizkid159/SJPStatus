@@ -15,41 +15,62 @@ enum class ApplicationStatus(
         displayLabel = "Offered / Joined",
         shortLabel = "Offered",
         description = "Job offered or joined on Sindh Job Portal",
-        funnelOrder = 6
+        funnelOrder = 9
     ),
     TEMP_OFFERED(
         code = "TEMP_OFFERED",
-        displayLabel = "Temporary Offered",
+        displayLabel = "Temp Offered",
         shortLabel = "Temp Offered",
-        description = "Provisional offer in backend pipeline",
-        funnelOrder = 5
+        description = "Temporarily or provisionally offered in SJP backend",
+        funnelOrder = 8
     ),
     SHORTLISTED(
         code = "SHORTLISTED",
-        displayLabel = "Shortlisted / Interview",
+        displayLabel = "Shortlisted",
         shortLabel = "Shortlisted",
-        description = "Shortlisted or scheduled for interview",
-        funnelOrder = 4
+        description = "Shortlisted or qualified for interview",
+        funnelOrder = 7
     ),
     TEMP_SHORTLISTED(
         code = "TEMP_SHORTLISTED",
-        displayLabel = "Temp Shortlisted / Waiting",
-        shortLabel = "Temp / Waiting",
-        description = "Temporarily shortlisted or on waiting list",
-        funnelOrder = 3
+        displayLabel = "Temp Shortlisted",
+        shortLabel = "Temp Shortlisted",
+        description = "Temporarily shortlisted in SJP backend",
+        funnelOrder = 6
+    ),
+    WAITING(
+        code = "WAITING",
+        displayLabel = "Waiting",
+        shortLabel = "Waiting",
+        description = "On merit waiting list",
+        funnelOrder = 5
+    ),
+    TEMP_WAITING(
+        code = "TEMP_WAITING",
+        displayLabel = "Temp Waiting",
+        shortLabel = "Temp Waiting",
+        description = "Temporarily placed on waiting list",
+        funnelOrder = 4
     ),
     UNDER_SCRUTINY(
         code = "UNDER_SCRUTINY",
         displayLabel = "Under Scrutiny",
-        shortLabel = "Scrutiny",
+        shortLabel = "Under Scrutiny",
         description = "Application under departmental review",
-        funnelOrder = 2
+        funnelOrder = 3
     ),
     APPLIED(
         code = "APPLIED",
         displayLabel = "Applied / Submitted",
         shortLabel = "Applied",
-        description = "Application submitted",
+        description = "Application submitted to portal",
+        funnelOrder = 2
+    ),
+    TEMP_REJECTED(
+        code = "TEMP_REJECTED",
+        displayLabel = "Temp Rejected",
+        shortLabel = "Temp Rejected",
+        description = "Temporarily or provisionally rejected (subject to review/objection)",
         funnelOrder = 1
     ),
     REJECTED(
@@ -66,8 +87,11 @@ enum class ApplicationStatus(
             TEMP_OFFERED -> if (isDark) StatusTempOfferedDarkBg to StatusTempOfferedDarkFg else StatusTempOfferedBg to StatusTempOfferedFg
             SHORTLISTED -> if (isDark) StatusShortlistedDarkBg to StatusShortlistedDarkFg else StatusShortlistedBg to StatusShortlistedFg
             TEMP_SHORTLISTED -> if (isDark) StatusTempShortlistedDarkBg to StatusTempShortlistedDarkFg else StatusTempShortlistedBg to StatusTempShortlistedFg
+            WAITING -> if (isDark) StatusWaitingDarkBg to StatusWaitingDarkFg else StatusWaitingBg to StatusWaitingFg
+            TEMP_WAITING -> if (isDark) StatusTempWaitingDarkBg to StatusTempWaitingDarkFg else StatusTempWaitingBg to StatusTempWaitingFg
             UNDER_SCRUTINY -> if (isDark) StatusScrutinyDarkBg to StatusScrutinyDarkFg else StatusScrutinyBg to StatusScrutinyFg
             APPLIED -> if (isDark) StatusAppliedDarkBg to StatusAppliedDarkFg else StatusAppliedBg to StatusAppliedFg
+            TEMP_REJECTED -> if (isDark) StatusTempRejectedDarkBg to StatusTempRejectedDarkFg else StatusTempRejectedBg to StatusTempRejectedFg
             REJECTED -> if (isDark) StatusRejectedDarkBg to StatusRejectedDarkFg else StatusRejectedBg to StatusRejectedFg
         }
     }
@@ -77,13 +101,17 @@ enum class ApplicationStatus(
             if (raw.isNullOrBlank()) return APPLIED
             val upper = raw.trim().uppercase()
             val normalized = upper.replace("_", " ").replace("-", " ")
+            val isTemp = normalized.contains("TEMP") || normalized.contains("PROVISIONAL")
 
             return when {
-                normalized.contains("REJECTED") || normalized.contains("DISQUALIF") || normalized.contains("INELIGIBLE") -> REJECTED
-                normalized.contains("TEMP") && normalized.contains("OFFER") -> TEMP_OFFERED
-                normalized.contains("OFFERED") || normalized.contains("JOINED") || normalized.contains("SELECTED") || normalized.contains("APPOINTED") -> OFFERED
-                normalized.contains("WAITING") || (normalized.contains("TEMP") && normalized.contains("SHORTLIST")) -> TEMP_SHORTLISTED
-                normalized.contains("SHORTLISTED") || normalized.contains("INTERVIEW") || normalized.contains("QUALIFIED") -> SHORTLISTED
+                isTemp && (normalized.contains("REJECT") || normalized.contains("DISQUALIF") || normalized.contains("INELIGIBLE")) -> TEMP_REJECTED
+                normalized.contains("REJECT") || normalized.contains("DISQUALIF") || normalized.contains("INELIGIBLE") -> REJECTED
+                isTemp && normalized.contains("OFFER") -> TEMP_OFFERED
+                normalized.contains("OFFER") || normalized.contains("JOINED") || normalized.contains("SELECTED") || normalized.contains("APPOINTED") -> OFFERED
+                isTemp && normalized.contains("WAIT") -> TEMP_WAITING
+                normalized.contains("WAIT") -> WAITING
+                isTemp && (normalized.contains("SHORTLIST") || normalized.contains("INTERVIEW") || normalized.contains("QUALIF")) -> TEMP_SHORTLISTED
+                normalized.contains("SHORTLIST") || normalized.contains("INTERVIEW") || normalized.contains("QUALIF") -> SHORTLISTED
                 normalized.contains("SCRUTIN") || normalized.contains("REVIEW") || normalized.contains("VERIF") -> UNDER_SCRUTINY
                 else -> APPLIED
             }

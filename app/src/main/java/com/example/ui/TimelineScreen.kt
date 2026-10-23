@@ -1,5 +1,8 @@
 package com.example.ui
 
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
@@ -48,26 +51,28 @@ fun TimelineScreen(
     ) {
         item {
             Card(
-                shape = RoundedCornerShape(18.dp),
+                shape = RoundedCornerShape(20.dp),
                 colors = CardDefaults.cardColors(
                     containerColor = MaterialTheme.colorScheme.surface
                 ),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.surfaceVariant),
                 elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(
                         text = "SJP Status History & Live Diffs",
                         style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
-                    Spacer(modifier = Modifier.height(2.dp))
+                    Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = "Shows ApplicationStatuses history returned by usr-svc.sjp.gos.pk and live status transitions detected during background polling.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(14.dp))
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -79,7 +84,7 @@ fun TimelineScreen(
                                 .weight(1f)
                                 .heightIn(min = 48.dp)
                                 .testTag("timeline_sync_button"),
-                            shape = RoundedCornerShape(12.dp)
+                            shape = RoundedCornerShape(14.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Sync,
@@ -96,7 +101,7 @@ fun TimelineScreen(
                                 modifier = Modifier
                                     .heightIn(min = 48.dp)
                                     .testTag("mark_all_read_button"),
-                                shape = RoundedCornerShape(12.dp)
+                                shape = RoundedCornerShape(14.dp)
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.DoneAll,
@@ -116,7 +121,9 @@ fun TimelineScreen(
             item {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp)
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.surfaceVariant)
                 ) {
                     Column(
                         modifier = Modifier
@@ -133,7 +140,8 @@ fun TimelineScreen(
                         Spacer(modifier = Modifier.height(10.dp))
                         Text(
                             text = "No Status History Loaded Yet",
-                            style = MaterialTheme.typography.titleLarge
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
@@ -150,11 +158,20 @@ fun TimelineScreen(
                 val (newBg, newFg) = item.newStatusEnum.badgeColors(isDark)
 
                 Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .animateItem(
+                            fadeInSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                            placementSpec = spring(
+                                dampingRatio = Spring.DampingRatioNoBouncy,
+                                stiffness = Spring.StiffnessMediumLow
+                            )
+                        ),
+                    shape = RoundedCornerShape(18.dp),
                     colors = CardDefaults.cardColors(
                         containerColor = MaterialTheme.colorScheme.surface
                     ),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.surfaceVariant),
                     elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
@@ -178,6 +195,7 @@ fun TimelineScreen(
                                 Text(
                                     text = "App ID: ${item.applicationId}",
                                     style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.primary
                                 )
                             }
@@ -211,14 +229,15 @@ fun TimelineScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(12.dp))
-                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
                                 .padding(horizontal = 12.dp, vertical = 10.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Surface(
                                 color = oldBg,
-                                shape = RoundedCornerShape(8.dp)
+                                shape = RoundedCornerShape(50),
+                                border = BorderStroke(1.dp, oldFg.copy(alpha = 0.3f))
                             ) {
                                 Text(
                                     text = item.previousRawStatus,
@@ -246,7 +265,8 @@ fun TimelineScreen(
 
                             Surface(
                                 color = newBg,
-                                shape = RoundedCornerShape(8.dp)
+                                shape = RoundedCornerShape(50),
+                                border = BorderStroke(1.dp, newFg.copy(alpha = 0.35f))
                             ) {
                                 Text(
                                     text = item.newRawStatus,

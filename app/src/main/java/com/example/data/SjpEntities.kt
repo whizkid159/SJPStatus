@@ -31,8 +31,17 @@ data class AppliedJobEntity(
     val lastUpdatedTimestamp: Long = System.currentTimeMillis(),
     val hasUnreadChange: Boolean = false
 ) {
+    /**
+     * Always derive statusEnum from rawStatusString first so dedicated statuses
+     * (TEMP_SHORTLISTED, TEMP_REJECTED, TEMP_WAITING, WAITING, TEMP_OFFERED)
+     * work immediately even on previously cached Room rows.
+     */
     val statusEnum: ApplicationStatus
-        get() = ApplicationStatus.fromCode(normalizedStatusCode)
+        get() = if (rawStatusString.isNotBlank()) {
+            ApplicationStatus.fromRawStatus(rawStatusString)
+        } else {
+            ApplicationStatus.fromCode(normalizedStatusCode)
+        }
 }
 
 @Entity(tableName = "status_history")
@@ -53,8 +62,16 @@ data class StatusHistoryEntity(
     val isUnread: Boolean = true
 ) {
     val previousStatusEnum: ApplicationStatus
-        get() = ApplicationStatus.fromCode(previousStatusCode)
+        get() = if (previousRawStatus.isNotBlank()) {
+            ApplicationStatus.fromRawStatus(previousRawStatus)
+        } else {
+            ApplicationStatus.fromCode(previousStatusCode)
+        }
 
     val newStatusEnum: ApplicationStatus
-        get() = ApplicationStatus.fromCode(newStatusCode)
+        get() = if (newRawStatus.isNotBlank()) {
+            ApplicationStatus.fromRawStatus(newRawStatus)
+        } else {
+            ApplicationStatus.fromCode(newStatusCode)
+        }
 }

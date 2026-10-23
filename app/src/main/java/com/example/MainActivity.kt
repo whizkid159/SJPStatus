@@ -9,6 +9,14 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
@@ -27,6 +35,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -104,6 +113,8 @@ fun SjpPulseApp(
             bottomBar = {
                 if (!isWideScreen) {
                     NavigationBar(
+                        tonalElevation = 6.dp,
+                        containerColor = MaterialTheme.colorScheme.surface,
                         modifier = Modifier.testTag("bottom_nav_bar")
                     ) {
                         for (dest in SjpDestination.entries) {
@@ -125,7 +136,19 @@ fun SjpPulseApp(
                                         )
                                     }
                                 },
-                                label = { Text(dest.label) },
+                                label = {
+                                    Text(
+                                        text = dest.label,
+                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+                                    )
+                                },
+                                colors = NavigationBarItemDefaults.colors(
+                                    selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    selectedTextColor = MaterialTheme.colorScheme.primary,
+                                    indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+                                ),
                                 modifier = Modifier.testTag("nav_tab_${dest.route}")
                             )
                         }
@@ -140,6 +163,7 @@ fun SjpPulseApp(
             ) {
                 if (isWideScreen) {
                     NavigationRail(
+                        containerColor = MaterialTheme.colorScheme.surface,
                         modifier = Modifier.testTag("side_nav_rail")
                     ) {
                         Spacer(modifier = Modifier.height(12.dp))
@@ -170,47 +194,63 @@ fun SjpPulseApp(
                 }
 
                 Box(modifier = Modifier.weight(1f)) {
-                    when (currentTab) {
-                        SjpDestination.DASHBOARD -> DashboardScreen(
-                            uiState = uiState,
-                            onSyncNow = viewModel::syncFromPortalApi,
-                            onOpenPortalTab = { currentTab = SjpDestination.PORTAL },
-                            onSearchQueryChange = viewModel::updateSearchQuery,
-                            onStatusFilterSelect = viewModel::selectStatusFilter,
-                            onToggleRemindersFilter = viewModel::toggleRemindersFilter,
-                            onToggleUnreadFilter = viewModel::toggleUnreadFilter,
-                            onClearFilters = viewModel::clearAllFilters,
-                            onOpenJobDetail = viewModel::openJobDetail,
-                            onDismissBanner = viewModel::dismissBannerFeedback
-                        )
+                    AnimatedContent(
+                        targetState = currentTab,
+                        transitionSpec = {
+                            (fadeIn(animationSpec = tween(220)) +
+                                scaleIn(
+                                    initialScale = 0.98f,
+                                    animationSpec = spring(
+                                        dampingRatio = Spring.DampingRatioNoBouncy,
+                                        stiffness = Spring.StiffnessMediumLow
+                                    )
+                                )).togetherWith(fadeOut(animationSpec = tween(160)))
+                        },
+                        label = "sjp_tab_transition"
+                    ) { targetTab ->
+                        when (targetTab) {
+                            SjpDestination.DASHBOARD -> DashboardScreen(
+                                uiState = uiState,
+                                onSyncNow = viewModel::syncFromPortalApi,
+                                onOpenPortalTab = { currentTab = SjpDestination.PORTAL },
+                                onSearchQueryChange = viewModel::updateSearchQuery,
+                                onStatusFilterSelect = viewModel::selectStatusFilter,
+                                onDepartmentFilterSelect = viewModel::selectDepartmentFilter,
+                                onToggleRemindersFilter = viewModel::toggleRemindersFilter,
+                                onToggleUnreadFilter = viewModel::toggleUnreadFilter,
+                                onClearFilters = viewModel::clearAllFilters,
+                                onOpenJobDetail = viewModel::openJobDetail,
+                                onDismissBanner = viewModel::dismissBannerFeedback
+                            )
 
-                        SjpDestination.TIMELINE -> TimelineScreen(
-                            historyList = uiState.historyList,
-                            unreadCount = uiState.unreadHistoryCount,
-                            onMarkAllRead = viewModel::markAllHistoryRead,
-                            onSyncNow = viewModel::syncFromPortalApi
-                        )
+                            SjpDestination.TIMELINE -> TimelineScreen(
+                                historyList = uiState.historyList,
+                                unreadCount = uiState.unreadHistoryCount,
+                                onMarkAllRead = viewModel::markAllHistoryRead,
+                                onSyncNow = viewModel::syncFromPortalApi
+                            )
 
-                        SjpDestination.ANALYTICS -> AnalyticsAndReportScreen(
-                            allJobs = uiState.allJobs
-                        )
+                            SjpDestination.ANALYTICS -> AnalyticsAndReportScreen(
+                                allJobs = uiState.allJobs
+                            )
 
-                        SjpDestination.PORTAL -> PortalWebViewScreen(
-                            sessionState = uiState.sessionState,
-                            webViewFetchRequests = viewModel.webViewFetchRequests,
-                            onSessionCaptured = { token, cookies ->
-                                viewModel.onWebViewSessionCaptured(token, cookies)
-                            },
-                            onPayloadCaptured = { json, source ->
-                                viewModel.onWebViewPayloadCaptured(json, source)
-                            },
-                            onFetchError = viewModel::onWebViewFetchError,
-                            onSaveConfig = viewModel::savePollingAndTokenConfig,
-                            onClearSession = viewModel::clearSessionAndData,
-                            onNavigateToDashboard = {
-                                currentTab = SjpDestination.DASHBOARD
-                            }
-                        )
+                            SjpDestination.PORTAL -> PortalWebViewScreen(
+                                sessionState = uiState.sessionState,
+                                webViewFetchRequests = viewModel.webViewFetchRequests,
+                                onSessionCaptured = { token, cookies ->
+                                    viewModel.onWebViewSessionCaptured(token, cookies)
+                                },
+                                onPayloadCaptured = { json, source ->
+                                    viewModel.onWebViewPayloadCaptured(json, source)
+                                },
+                                onFetchError = viewModel::onWebViewFetchError,
+                                onSaveConfig = viewModel::savePollingAndTokenConfig,
+                                onClearSession = viewModel::clearSessionAndData,
+                                onNavigateToDashboard = {
+                                    currentTab = SjpDestination.DASHBOARD
+                                }
+                            )
+                        }
                     }
                 }
             }

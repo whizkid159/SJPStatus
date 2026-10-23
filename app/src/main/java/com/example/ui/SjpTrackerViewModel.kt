@@ -50,7 +50,9 @@ data class SjpUiState(
     val shortlistedTotalCount: Int
         get() = allJobs.count {
             it.statusEnum == ApplicationStatus.SHORTLISTED ||
-                it.statusEnum == ApplicationStatus.TEMP_SHORTLISTED
+                it.statusEnum == ApplicationStatus.TEMP_SHORTLISTED ||
+                it.statusEnum == ApplicationStatus.WAITING ||
+                it.statusEnum == ApplicationStatus.TEMP_WAITING
         }
     val offeredTotalCount: Int
         get() = allJobs.count {
@@ -60,9 +62,15 @@ data class SjpUiState(
                 it.hasOfferRecord
         }
     val rejectedTotalCount: Int
-        get() = allJobs.count { it.statusEnum == ApplicationStatus.REJECTED }
+        get() = allJobs.count {
+            it.statusEnum == ApplicationStatus.REJECTED ||
+                it.statusEnum == ApplicationStatus.TEMP_REJECTED
+        }
     val unreadHistoryCount: Int
         get() = historyList.count { it.isUnread }
+
+    fun countForStatus(status: ApplicationStatus): Int =
+        allJobs.count { it.statusEnum == status }
 }
 
 private data class InternalControlState(
@@ -166,10 +174,24 @@ class SjpTrackerViewModel(application: Application) : AndroidViewModel(applicati
 
     fun selectStatusFilter(status: ApplicationStatus?) {
         val current = controlState.value
-        val nextStatus = if (current.filterState.selectedStatus == status) null else status
-        controlState.value = current.copy(
-            filterState = current.filterState.copy(selectedStatus = nextStatus)
-        )
+        if (status == null) {
+            controlState.value = current.copy(
+                filterState = current.filterState.copy(
+                    selectedStatus = null,
+                    onlyUnreadChanges = false,
+                    onlyWithReminders = false
+                )
+            )
+        } else {
+            val nextStatus = if (current.filterState.selectedStatus == status) null else status
+            controlState.value = current.copy(
+                filterState = current.filterState.copy(
+                    selectedStatus = nextStatus,
+                    onlyUnreadChanges = false,
+                    onlyWithReminders = false
+                )
+            )
+        }
     }
 
     fun selectDepartmentFilter(department: String?) {
