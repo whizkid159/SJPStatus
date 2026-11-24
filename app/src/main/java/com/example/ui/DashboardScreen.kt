@@ -51,6 +51,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.data.ApplicationStatus
 import com.example.data.AppliedJobEntity
+import com.example.data.SjpDocumentExtractor
 import com.example.data.SjpPayloadParser
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -1289,6 +1290,9 @@ fun AppliedJobCard(
     val statusHistoryEntries = remember(job.statusHistoryJson) {
         SjpPayloadParser.parseBackendHistoryJson(job.statusHistoryJson)
     }
+    val detectedDocs = remember(job.rawJsonPayload) {
+        SjpDocumentExtractor.extractDocuments(job.rawJsonPayload)
+    }
     var isHistoryPreviewExpanded by remember { mutableStateOf(false) }
 
     Card(
@@ -1437,6 +1441,67 @@ fun AppliedJobCard(
                         BookmarkletFieldRow("Interview", job.jobInterviewStatus)
                         BookmarkletFieldRow("Offer record", if (job.hasOfferRecord) "PRESENT" else "NONE")
                         BookmarkletFieldRow("Rejection reason", job.reasonForRejected)
+                    }
+                }
+
+                if (detectedDocs.isNotEmpty()) {
+                    val primaryDoc = detectedDocs.first()
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable(onClick = onCardClick)
+                            .testTag("card_appointment_pdf_pill_${job.applicationId}"),
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (isDark) Color(0xFF064E3B).copy(alpha = 0.55f) else Color(0xFFECFDF5),
+                        border = BorderStroke(
+                            1.dp,
+                            if (isDark) Color(0xFF34D399).copy(alpha = 0.5f) else Color(0xFF059669).copy(alpha = 0.45f)
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 9.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.PictureAsPdf,
+                                    contentDescription = "Appointment Order PDF",
+                                    tint = if (isDark) Color(0xFF34D399) else Color(0xFF047857),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = primaryDoc.label,
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isDark) Color(0xFF34D399) else Color(0xFF047857)
+                                    )
+                                    Text(
+                                        text = primaryDoc.displayFileName,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Download",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = if (isDark) Color(0xFF34D399) else Color(0xFF047857)
+                            )
+                        }
                     }
                 }
 

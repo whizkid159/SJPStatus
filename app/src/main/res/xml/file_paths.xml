@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <cache-path
+        name="appointment_orders_cache"
+        path="appointment_orders/" />
+    <external-files-path
+        name="app_downloads"
+        path="Download/" />
+</paths>

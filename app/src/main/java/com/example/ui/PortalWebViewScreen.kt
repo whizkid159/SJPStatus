@@ -119,7 +119,8 @@ class SjpWebJsBridge(
     private val onTokenCaptured: (String) -> Unit,
     private val onPayloadCaptured: (String) -> Unit,
     private val onErrorCaptured: (String) -> Unit,
-    private val onLoggedOut: () -> Unit
+    private val onLoggedOut: () -> Unit,
+    private val onFileBasesDiscovered: (List<String>) -> Unit = {}
 ) {
     @JavascriptInterface
     fun onAuthTokenFound(token: String?) {
@@ -146,6 +147,19 @@ class SjpWebJsBridge(
     fun onUserLoggedOut() {
         onLoggedOut()
     }
+
+    @JavascriptInterface
+    fun onFileBaseUrlsDiscovered(joinedUrls: String?) {
+        if (joinedUrls.isNullOrBlank()) return
+        val urls = joinedUrls
+            .split("\n")
+            .map { it.trim() }
+            .filter { it.startsWith("https://") || it.startsWith("http://") }
+            .distinct()
+        if (urls.isNotEmpty()) {
+            onFileBasesDiscovered(urls)
+        }
+    }
 }
 
 @SuppressLint("SetJavaScriptEnabled")
@@ -158,7 +172,9 @@ fun PortalWebViewScreen(
     onFetchError: (String) -> Unit,
     onSaveConfig: (String, Int, Boolean, String) -> Unit,
     onClearSession: () -> Unit,
-    onNavigateToDashboard: () -> Unit
+    onNavigateToDashboard: () -> Unit,
+    onFileBaseUrlsDiscovered: (List<String>) -> Unit = {},
+    onDirectPdfDownloadRequested: (String, String?) -> Unit = { _, _ -> }
 ) {
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
     var currentUrl by remember { mutableStateOf("https://sjp.gos.pk") }
@@ -208,6 +224,52 @@ fun PortalWebViewScreen(
             }
           } catch(e) {}
 
+          // Passively discover file/storage/CDN base URLs from Next.js config, DOM links, and loaded resources
+          try {
+            var discoveredBases = {};
+            function recordBaseUrl(rawUrl) {
+              if (!rawUrl || typeof rawUrl !== 'string') return;
+              if (!/^https?:\/\//i.test(rawUrl)) return;
+              if (/sjp\.gos\.pk|amazonaws\.com|digitaloceanspaces\.com|storage\.googleapis\.com|blob\.core\.windows\.net|cloudfront\.net|r2\.cloudflarestorage|uploads|files|appointment|offer|\.pdf/i.test(rawUrl)) {
+                var clean = rawUrl.split('?')[0].split('#')[0];
+                if (/\.pdf$/i.test(clean)) {
+                  var parentDir = clean.substring(0, clean.lastIndexOf('/'));
+                  if (parentDir && parentDir.length > 10) discoveredBases[parentDir] = true;
+                } else {
+                  try {
+                    var parsedU = new URL(clean);
+                    discoveredBases[parsedU.origin] = true;
+                    if (/\/(uploads|files|media|documents|storage|public)\b/i.test(parsedU.pathname)) {
+                      var segMatch = parsedU.pathname.match(/^(\/[^\/]+(\/uploads|\/files|\/media|\/documents)?)/i);
+                      if (segMatch && segMatch[1]) {
+                        discoveredBases[parsedU.origin + segMatch[1]] = true;
+                      }
+                    }
+                  } catch(e2) {}
+                }
+              }
+            }
+            if (window.__NEXT_DATA__) {
+              var nextStr = JSON.stringify(window.__NEXT_DATA__);
+              var nextUrls = nextStr.match(/https?:\/\/[^"'\\s<>]+/g) || [];
+              for (var ni = 0; ni < nextUrls.length; ni++) recordBaseUrl(nextUrls[ni]);
+            }
+            if (window.performance && window.performance.getEntriesByType) {
+              var perfEntries = window.performance.getEntriesByType('resource') || [];
+              for (var pi = 0; pi < perfEntries.length; pi++) {
+                if (perfEntries[pi] && perfEntries[pi].name) recordBaseUrl(perfEntries[pi].name);
+              }
+            }
+            var pdfLinks = document.querySelectorAll('a[href*=".pdf"], a[href*="upload"], a[href*="download"], a[href*="appointment"], iframe[src*=".pdf"]');
+            for (var li = 0; li < pdfLinks.length; li++) {
+              recordBaseUrl(pdfLinks[li].href || pdfLinks[li].src);
+            }
+            var baseKeys = Object.keys(discoveredBases);
+            if (baseKeys.length > 0 && AndroidSjpBridge.onFileBaseUrlsDiscovered) {
+              AndroidSjpBridge.onFileBaseUrlsDiscovered(baseKeys.join('\n'));
+            }
+          } catch(e) {}
+
           if (!window.__sjpPulseHooked) {
             window.__sjpPulseHooked = true;
 
@@ -248,6 +310,15 @@ fun PortalWebViewScreen(
               if (this.__sjpUrl && /logout|signout/i.test(this.__sjpUrl)) {
                 AndroidSjpBridge.onUserLoggedOut();
               }
+              if (this.__sjpUrl && /upload|file|download|appointment|offer|pdf|s3|signed/i.test(this.__sjpUrl)) {
+                try {
+                  var uObj = new URL(this.__sjpUrl, window.location.origin);
+                  var parent = uObj.href.split('?')[0].replace(/\/[^\/]*$/, '');
+                  if (AndroidSjpBridge.onFileBaseUrlsDiscovered) {
+                    AndroidSjpBridge.onFileBaseUrlsDiscovered(uObj.origin + '\n' + parent);
+                  }
+                } catch(e) {}
+              }
               return origOpen.apply(this, arguments);
             };
             XMLHttpRequest.prototype.setRequestHeader = function(header, value) {
@@ -271,6 +342,13 @@ fun PortalWebViewScreen(
                   var reqUrl = String(args[0] || '');
                   if (/logout|signout/i.test(reqUrl)) {
                     AndroidSjpBridge.onUserLoggedOut();
+                  }
+                  if (/upload|file|download|appointment|offer|pdf|s3|signed/i.test(reqUrl)) {
+                    var fu = new URL(reqUrl, window.location.origin);
+                    var fParent = fu.href.split('?')[0].replace(/\/[^\/]*$/, '');
+                    if (AndroidSjpBridge.onFileBaseUrlsDiscovered) {
+                      AndroidSjpBridge.onFileBaseUrlsDiscovered(fu.origin + '\n' + fParent);
+                    }
                   }
                   var opts = args[1] || {};
                   var hdrs = opts.headers || {};
@@ -458,10 +536,32 @@ fun PortalWebViewScreen(
                                 post {
                                     performFullPortalLogout()
                                 }
+                            },
+                            onFileBasesDiscovered = { urls ->
+                                post {
+                                    onFileBaseUrlsDiscovered(urls)
+                                }
                             }
                         ),
                         "AndroidSjpBridge"
                     )
+
+                    setDownloadListener { url, _, contentDisposition, mimeType, _ ->
+                        if (!url.isNullOrBlank()) {
+                            val fileNameHint = Regex("filename=\"?([^\";]+)\"?", RegexOption.IGNORE_CASE)
+                                .find(contentDisposition.orEmpty())
+                                ?.groupValues
+                                ?.getOrNull(1)
+                            if (mimeType.orEmpty().contains("pdf", ignoreCase = true) ||
+                                url.contains(".pdf", ignoreCase = true) ||
+                                fileNameHint.orEmpty().endsWith(".pdf", ignoreCase = true)
+                            ) {
+                                post {
+                                    onDirectPdfDownloadRequested(url, fileNameHint)
+                                }
+                            }
+                        }
+                    }
 
                     webChromeClient = WebChromeClient()
                     webViewClient = object : WebViewClient() {

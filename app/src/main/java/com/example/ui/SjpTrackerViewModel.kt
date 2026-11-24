@@ -5,8 +5,10 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.ApplicationStatus
 import com.example.data.AppliedJobEntity
+import com.example.data.DocumentDownloadState
 import com.example.data.SessionPreferencesRepository
 import com.example.data.SjpDatabase
+import com.example.data.SjpDocumentRef
 import com.example.data.SjpRepository
 import com.example.data.SjpSessionState
 import com.example.data.StatusHistoryEntity
@@ -44,7 +46,8 @@ data class SjpUiState(
     val isSyncing: Boolean = false,
     val bannerFeedback: String? = null,
     val selectedJobForDetail: AppliedJobEntity? = null,
-    val initialDetailTab: Int = 0
+    val initialDetailTab: Int = 0,
+    val documentDownloadStates: Map<String, DocumentDownloadState> = emptyMap()
 ) {
     val totalCount: Int get() = allJobs.size
     val shortlistedTotalCount: Int
@@ -78,7 +81,8 @@ private data class InternalControlState(
     val isSyncing: Boolean = false,
     val bannerFeedback: String? = null,
     val selectedJobId: String? = null,
-    val initialDetailTab: Int = 0
+    val initialDetailTab: Int = 0,
+    val documentDownloadStates: Map<String, DocumentDownloadState> = emptyMap()
 )
 
 class SjpTrackerViewModel(application: Application) : AndroidViewModel(application) {
@@ -128,7 +132,8 @@ class SjpTrackerViewModel(application: Application) : AndroidViewModel(applicati
             isSyncing = ctrl.isSyncing,
             bannerFeedback = ctrl.bannerFeedback,
             selectedJobForDetail = selectedJob,
-            initialDetailTab = ctrl.initialDetailTab
+            initialDetailTab = ctrl.initialDetailTab,
+            documentDownloadStates = ctrl.documentDownloadStates
         )
     }.stateIn(
         scope = viewModelScope,
@@ -332,6 +337,68 @@ class SjpTrackerViewModel(application: Application) : AndroidViewModel(applicati
                 bannerFeedback = "Marked all status updates as read"
             )
         }
+    }
+
+    fun downloadSjpDocument(
+        job: AppliedJobEntity,
+        doc: SjpDocumentRef,
+        customBaseOverride: String? = null
+    ) {
+        val docKey = doc.uniqueKey(job.applicationId)
+        viewModelScope.launch {
+            updateDocumentState(
+                docKey,
+                DocumentDownloadState.Probing(
+                    currentUrl = "Preparing SJP API endpoints…",
+                    currentStep = 0,
+                    totalSteps = 1,
+                    attempts = emptyList()
+                )
+            )
+            val result = repository.downloadDocumentWithProbe(
+                job = job,
+                doc = doc,
+                customBaseOverride = customBaseOverride,
+                onProgress = { progressState ->
+                    updateDocumentState(docKey, progressState)
+                }
+            )
+            updateDocumentState(docKey, result)
+            if (result is DocumentDownloadState.Success) {
+                controlState.value = controlState.value.copy(
+                    bannerFeedback = "Downloaded ${result.fileName} to ${result.savedLocationLabel}"
+                )
+            }
+        }
+    }
+
+    fun onDiscoveredFileBaseUrls(urls: List<String>) {
+        if (urls.isEmpty()) return
+        viewModelScope.launch {
+            repository.recordDiscoveredFileBaseUrls(urls)
+        }
+    }
+
+    fun onWebViewDirectPdfDownload(url: String, fileNameHint: String? = null) {
+        viewModelScope.launch {
+            controlState.value = controlState.value.copy(
+                bannerFeedback = "Downloading PDF from SJP Portal…"
+            )
+            val result = repository.downloadDirectPdfUrl(url, fileNameHint)
+            val msg = when (result) {
+                is DocumentDownloadState.Success -> "Saved ${result.fileName} to ${result.savedLocationLabel}"
+                is DocumentDownloadState.Error -> result.message
+                else -> "Download finished"
+            }
+            controlState.value = controlState.value.copy(bannerFeedback = msg)
+        }
+    }
+
+    private fun updateDocumentState(key: String, state: DocumentDownloadState) {
+        val current = controlState.value
+        controlState.value = current.copy(
+            documentDownloadStates = current.documentDownloadStates + (key to state)
+        )
     }
 
     fun clearSessionAndData() {

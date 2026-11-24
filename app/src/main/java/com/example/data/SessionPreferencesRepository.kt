@@ -31,7 +31,9 @@ data class SjpSessionState(
     val lastPollSuccess: Boolean = true,
     val totalPollCount: Int = 0,
     val totalApplicationsOnServer: Int = 0,
-    val totalPagesOnServer: Int = 1
+    val totalPagesOnServer: Int = 1,
+    val discoveredFileBaseUrls: List<String> = emptyList(),
+    val customDocumentBaseUrl: String = ""
 ) {
     val hasActiveSession: Boolean
         get() = bearerToken.isNotBlank() || cookieHeader.isNotBlank()
@@ -58,6 +60,8 @@ class SessionPreferencesRepository(private val context: Context) {
         val TOTAL_POLL_COUNT = intPreferencesKey("total_poll_count")
         val TOTAL_APPS_ON_SERVER = intPreferencesKey("total_apps_on_server")
         val TOTAL_PAGES_ON_SERVER = intPreferencesKey("total_pages_on_server")
+        val DISCOVERED_FILE_BASES = stringPreferencesKey("discovered_file_bases_v1")
+        val CUSTOM_DOC_BASE_URL = stringPreferencesKey("custom_doc_base_url_v1")
     }
 
     val sessionFlow: Flow<SjpSessionState> = context.sjpDataStore.data.map { prefs ->
@@ -90,7 +94,12 @@ class SessionPreferencesRepository(private val context: Context) {
             lastPollSuccess = prefs[Keys.LAST_POLL_SUCCESS] ?: true,
             totalPollCount = prefs[Keys.TOTAL_POLL_COUNT] ?: 0,
             totalApplicationsOnServer = prefs[Keys.TOTAL_APPS_ON_SERVER] ?: 0,
-            totalPagesOnServer = prefs[Keys.TOTAL_PAGES_ON_SERVER] ?: 1
+            totalPagesOnServer = prefs[Keys.TOTAL_PAGES_ON_SERVER] ?: 1,
+            discoveredFileBaseUrls = (prefs[Keys.DISCOVERED_FILE_BASES] ?: "")
+                .split("\n")
+                .map { it.trim() }
+                .filter { it.isNotBlank() },
+            customDocumentBaseUrl = prefs[Keys.CUSTOM_DOC_BASE_URL] ?: ""
         )
     }
 
@@ -168,12 +177,40 @@ class SessionPreferencesRepository(private val context: Context) {
         }
     }
 
+    suspend fun addDiscoveredFileBaseUrls(urls: List<String>) {
+        val cleaned = urls.map { it.trim().trimEnd('/') }
+            .filter { it.startsWith("https://") || it.startsWith("http://") }
+            .distinct()
+        if (cleaned.isEmpty()) return
+        context.sjpDataStore.edit { prefs ->
+            val existing = (prefs[Keys.DISCOVERED_FILE_BASES] ?: "")
+                .split("\n")
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+            val merged = (cleaned + existing).distinct().take(15)
+            prefs[Keys.DISCOVERED_FILE_BASES] = merged.joinToString("\n")
+        }
+    }
+
+    suspend fun saveCustomDocumentBaseUrl(baseUrl: String) {
+        context.sjpDataStore.edit { prefs ->
+            val trimmed = baseUrl.trim().trimEnd('/')
+            if (trimmed.isBlank()) {
+                prefs.remove(Keys.CUSTOM_DOC_BASE_URL)
+            } else {
+                prefs[Keys.CUSTOM_DOC_BASE_URL] = trimmed
+            }
+        }
+    }
+
     suspend fun clearSession() {
         context.sjpDataStore.edit { prefs ->
             prefs.remove(Keys.ENCRYPTED_BEARER_TOKEN)
             prefs.remove(Keys.ENCRYPTED_COOKIE_HEADER)
             prefs.remove(Keys.LEGACY_BEARER_TOKEN)
             prefs.remove(Keys.LEGACY_COOKIE_HEADER)
+            prefs.remove(Keys.DISCOVERED_FILE_BASES)
+            prefs.remove(Keys.CUSTOM_DOC_BASE_URL)
             prefs[Keys.CANDIDATE_NAME] = ""
             prefs[Keys.CANDIDATE_CNIC] = ""
             prefs[Keys.LAST_POLL_MSG] = "Encrypted session cleared. Please log in on the SJP Login tab."

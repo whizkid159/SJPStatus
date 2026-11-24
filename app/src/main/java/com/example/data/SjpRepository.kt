@@ -353,8 +353,70 @@ class SjpRepository(
         dao.markAllJobChangesRead()
     }
 
+    suspend fun downloadDocumentWithProbe(
+        job: AppliedJobEntity,
+        doc: SjpDocumentRef,
+        customBaseOverride: String? = null,
+        onProgress: (DocumentDownloadState.Probing) -> Unit
+    ): DocumentDownloadState {
+        val session = sessionPrefs.sessionFlow.first()
+        val activeCookies = getCombinedPortalCookies(session.cookieHeader)
+        val effectiveCustomBase = customBaseOverride?.trim()?.ifBlank { null }
+            ?: session.customDocumentBaseUrl
+
+        if (!customBaseOverride.isNullOrBlank()) {
+            sessionPrefs.saveCustomDocumentBaseUrl(customBaseOverride.trim())
+        }
+
+        val (resultState, discoveredWorkingBase) = SjpDocumentDownloader.downloadWithProbe(
+            context = appContext,
+            applicationId = job.applicationId,
+            jobTitle = job.jobTitle,
+            doc = doc,
+            bearerToken = session.bearerToken,
+            cookieHeader = activeCookies,
+            apiBaseEndpoint = session.customEndpointUrl.ifBlank { DEFAULT_SJP_API_URL },
+            discoveredBaseUrls = session.discoveredFileBaseUrls,
+            customBaseUrl = effectiveCustomBase,
+            onProgress = onProgress
+        )
+
+        if (!discoveredWorkingBase.isNullOrBlank()) {
+            sessionPrefs.addDiscoveredFileBaseUrls(listOf(discoveredWorkingBase))
+            if (session.customDocumentBaseUrl.isBlank()) {
+                sessionPrefs.saveCustomDocumentBaseUrl(discoveredWorkingBase)
+            }
+        }
+
+        return resultState
+    }
+
+    suspend fun downloadDirectPdfUrl(
+        url: String,
+        suggestedFileName: String? = null
+    ): DocumentDownloadState {
+        val session = sessionPrefs.sessionFlow.first()
+        val activeCookies = getCombinedPortalCookies(session.cookieHeader)
+        val (resultState, basePrefix) = SjpDocumentDownloader.downloadDirectUrl(
+            context = appContext,
+            url = url,
+            suggestedFileName = suggestedFileName,
+            bearerToken = session.bearerToken,
+            cookieHeader = activeCookies
+        )
+        if (!basePrefix.isNullOrBlank()) {
+            sessionPrefs.addDiscoveredFileBaseUrls(listOf(basePrefix))
+        }
+        return resultState
+    }
+
+    suspend fun recordDiscoveredFileBaseUrls(urls: List<String>) {
+        sessionPrefs.addDiscoveredFileBaseUrls(urls)
+    }
+
     suspend fun clearAllTrackedData() {
         dao.clearAllJobs()
         dao.clearAllHistory()
+        SjpDocumentDownloader.clearCachedDocuments(appContext)
     }
 }

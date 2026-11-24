@@ -248,7 +248,9 @@ fun SjpPulseApp(
                                 onClearSession = viewModel::clearSessionAndData,
                                 onNavigateToDashboard = {
                                     currentTab = SjpDestination.DASHBOARD
-                                }
+                                },
+                                onFileBaseUrlsDiscovered = viewModel::onDiscoveredFileBaseUrls,
+                                onDirectPdfDownloadRequested = viewModel::onWebViewDirectPdfDownload
                             )
                         }
                     }
@@ -265,6 +267,11 @@ fun SjpPulseApp(
             job = selectedJob,
             jobHistory = jobHistory,
             initialTab = uiState.initialDetailTab,
+            documentDownloadStates = uiState.documentDownloadStates,
+            savedCustomDocBaseUrl = uiState.sessionState.customDocumentBaseUrl,
+            onDownloadDocument = { doc, customBase ->
+                viewModel.downloadSjpDocument(selectedJob, doc, customBase)
+            },
             onDismiss = viewModel::closeJobDetail,
             onSaveNotesAndReminder = { notes, interviewTs ->
                 viewModel.saveJobNotesAndInterview(selectedJob.applicationId, notes, interviewTs)
